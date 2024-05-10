@@ -1,0 +1,48 @@
+services:
+  opigno_learning_path.content_types.manager:
+    class: Drupal\opigno_learning_path\LearningPathContentTypesManager
+    parent: default_plugin_manager
+  opigno_learning_path.members.manager:
+    class: Drupal\opigno_learning_path\LearningPathMembersManager
+    parent: default_plugin_manager
+
+#  opigno_learning_path.lp_tools_database:
+#    class: Drupal\opigno_learning_path\Database\LearningPathContentsDatabase
+#    arguments: ['@database']
+#    tags:
+#      - { name: backend_overridable }
+
+  opigno_learning_path.event_subscriber:
+    class: Drupal\opigno_learning_path\EventSubscriber\LearningPathEventSubscriber
+    arguments: ['@opigno_learning_path.content_types.manager']
+    tags:
+      - { name: event_subscriber }
+
+  opigno_learning_path.group_operations:
+    class: Drupal\opigno_learning_path\LearningPathGroupOperationsLinks
+    arguments: ['@config.factory', '@module_handler', '@current_user']
+
+  opigno_learning_path.route_subscriber:
+    class: Drupal\opigno_learning_path\Routing\RouteSubscriber
+    tags:
+      - { name: event_subscriber }
+  opigno_learning_path.twig.extension:
+    class: Drupal\opigno_learning_path\TwigExtension\DefaultTwigExtension
+    arguments: []
+    tags:
+      - { name: twig.extension }
+  opigno_learning_path.join_form:
+    class: Drupal\opigno_learning_path\JoinService
+    arguments: ['@current_user', '@entity.form_builder']
+  opigno_learning_path.progress:
+    class: Drupal\opigno_learning_path\Progress
+    arguments: ['@current_user', '@database', '@request_stack']
+  opigno_lps:
+    class: Drupal\opigno_learning_path\LpSteps
+    arguments: ['@current_user', '@database', '@module_handler']
+
+  cache_context.opigno_current:
+    class: Drupal\opigno_learning_path\Cache\Context\OpignoCurrentCacheContext
+    arguments: ['@current_user']
+    tags:
+      - { name: cache.context}
