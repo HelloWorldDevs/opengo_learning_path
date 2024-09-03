@@ -80,27 +80,18 @@ class BackLinkBlock extends SystemBreadcrumbBlock implements ContainerFactoryPlu
    * {@inheritdoc}
    */
   public function build() {
+    $config = $this->configuration;
     /** @var \Drupal\Core\Link[] $links */
     $links = $this->getLinks();
-    $last_url = '';
-    $last_link = NULL;
-
-    // Get the last clickable link.
-    for ($i = count($links); $i >= 0; $i--) {
-      $last_link = array_pop($links);
-      $last_url = $last_link->getUrl()->toString();
-      if ($last_url) {
-        break;
-      }
-    }
-
+    /** @var \Drupal\Core\Link $last_link */
+    $last_link = array_pop($links);
     if ($last_link instanceof Link) {
       return [
         '#type' => 'inline_template',
         '#template' => '<div class="back-btn d-none d-lg-block {{js_button}}"><a href="{{context}}"><i class="fi fi-rr-angle-small-left d-lg-none"></i><i class="fi fi-rr-arrow-left d-none d-lg-block"></i>{{context_title}}</a></div>',
         '#context' => [
           'context_title' => $this->t('Back'),
-          'context' => $last_url,
+          'context' => $last_link->getUrl()->toString(),
         ],
         '#attached' => [
           'library' => ['opigno_learning_path/back_button'],

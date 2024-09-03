@@ -10,6 +10,7 @@ use Drupal\opigno_learning_path\LearningPathAccess;
 use Drupal\opigno_learning_path\LearningPathValidator;
 use Drupal\views\Views;
 use Symfony\Component\HttpFoundation\RedirectResponse;
+use Drupal\group\Entity\Group;
 
 /**
  * Group overview form.
@@ -33,6 +34,9 @@ class LearningPathMembersForm extends FormBase {
 
     /** @var \Drupal\group\Entity\Group $group */
     $group = \Drupal::routeMatch()->getParameter('group');
+    if (!$group instanceof Group) {
+      $group = Group::load($group);  
+    }
     $group_bundle = $group->bundle();
 
     // Check if user has uncompleted steps.

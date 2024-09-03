@@ -9,27 +9,14 @@ use Drupal\opigno_learning_path\Entity\LPStatus;
 use Drupal\opigno_learning_path\LearningPathContent;
 use Drupal\opigno_module\Entity\OpignoActivity;
 use Drupal\opigno_module\Entity\OpignoModule;
-use Drupal\opigno_module\Entity\OpignoModuleInterface;
 
 /**
- * Provides the LP achievements trait.
- *
- * @package Drupal\opigno_learning_path\Traits
+ * LearningPathAchievementTrait trait.
  */
 trait LearningPathAchievementTrait {
 
-  /**
-   * The entity type manager service.
-   *
-   * @var \Drupal\Core\Entity\EntityTypeManagerInterface
-   */
   protected $entityTypeManager;
 
-  /**
-   * The route match service.
-   *
-   * @var \Drupal\Core\Routing\RouteMatchInterface
-   */
   protected $routeMatch;
 
   /**
@@ -125,13 +112,13 @@ trait LearningPathAchievementTrait {
    *
    * @param array $attempts
    *   User module attempts.
-   * @param \Drupal\opigno_module\Entity\OpignoModuleInterface $module
+   * @param \Drupal\opigno_module\Entity\OpignoModule $module
    *   Module.
    *
    * @return \Drupal\opigno_module\Entity\UserModuleStatus
    *   $attempt
    */
-  protected function getTargetAttempt(array $attempts, OpignoModuleInterface $module) {
+  protected function getTargetAttempt(array $attempts, OpignoModule $module) {
     if ($module->getKeepResultsOption() == 'newest') {
       $attempt = end($attempts);
     }
@@ -153,6 +140,12 @@ trait LearningPathAchievementTrait {
 
     // Get training latest certification timestamp.
     $latest_cert_date = LPStatus::getTrainingStartDate($training, $user->id());
+
+    $parent = isset($course) ? $course : $training;
+    $step = opigno_learning_path_get_module_step($parent->id(), $user->id(), $module, $latest_cert_date);
+
+    /** @var \Drupal\opigno_module\Entity\OpignoModule $module */
+    $module = OpignoModule::load($step['id']);
     /** @var \Drupal\opigno_module\Entity\UserModuleStatus[] $attempts */
     $attempts = $module->getModuleAttempts($user, NULL, $latest_cert_date);
 
@@ -186,34 +179,31 @@ trait LearningPathAchievementTrait {
       /** @var \Drupal\opigno_module\Entity\OpignoActivity $activity */
       return OpignoActivity::load($activity->id);
     }, $activities);
-    $attempts = array_filter($attempts, function ($attempt) use ($module, $user, $activities) {
-      return !$attempt->isEvaluated() || ($attempt->isEvaluated() && $this->hasAnsweredActivities($module, $user, $attempt, $activities));
-    });
     return [$activities, $attempts];
-  }
-
-  /**
-   * Check if user has answered all activities.
-   */
-  public function hasAnsweredActivities($module, $user, $attempt, $activities) {
-    $answers = [];
-    foreach ($activities as $activity) {
-      $answers[] = $activity->getUserAnswer($module, $attempt, $user);
-    }
-    return count(array_filter($answers)) == count($activities);
   }
 
   /**
    * Gets a statuses of activities.
    */
   public function getActivityStatus($activities, $attempts, $module): array {
+    if (!empty($attempts)) {
+      // If "newest" score - get the last attempt,
+      // else - get the best attempt.
+      $attempt = $this->getTargetAttempt($attempts, $module);
+    }
+    else {
+      $attempt = NULL;
+    }
+
     $user = $this->currentUser();
-    $attempt = !empty($attempts) ? $this->getTargetAttempt($attempts, $module) : NULL;
+
     /** @var \Drupal\opigno_module\Entity\OpignoActivity $activity */
     /** @var \Drupal\opigno_module\Entity\OpignoAnswer $answer */
     $array_map = [];
     foreach ($activities as $key => $activity) {
-      $answer = isset($attempt) ? $activity->getUserAnswer($module, $attempt, $user) : NULL;
+      $answer = isset($attempt)
+        ? $activity->getUserAnswer($module, $attempt, $user)
+        : NULL;
       if ($answer && $activity->hasField('opigno_evaluation_method') && $activity->get('opigno_evaluation_method')->value && !$answer->isEvaluated()) {
         $state_class = 'pending';
       }

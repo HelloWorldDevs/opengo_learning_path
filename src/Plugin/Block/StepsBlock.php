@@ -5,13 +5,10 @@ namespace Drupal\opigno_learning_path\Plugin\Block;
 use Drupal\Core\Block\BlockBase;
 use Drupal\Core\Cache\Cache;
 use Drupal\Core\Cache\CacheableMetadata;
-use Drupal\Core\DependencyInjection\ClassResolverInterface;
-use Drupal\Core\Entity\EntityRepositoryInterface;
 use Drupal\Core\Plugin\ContainerFactoryPluginInterface;
 use Drupal\Core\Url;
 use Drupal\group\Entity\Group;
 use Drupal\group\Entity\GroupInterface;
-use Drupal\opigno_group_manager\Controller\OpignoGroupManagerController;
 use Drupal\opigno_group_manager\Entity\OpignoGroupManagedContent;
 use Drupal\opigno_group_manager\OpignoGroupContentTypesManager;
 use Drupal\opigno_learning_path\Controller\LearningPathStepsController;
@@ -39,34 +36,16 @@ class StepsBlock extends BlockBase implements ContainerFactoryPluginInterface, T
   protected $opignoGroupContentTypesManager;
 
   /**
-   * The class resolver service.
-   *
-   * @var \Drupal\Core\DependencyInjection\ClassResolverInterface
-   */
-  protected $classResolver;
-
-  /**
-   * Entity repository service.
-   *
-   * @var \Drupal\Core\Entity\EntityRepositoryInterface
-   */
-  protected $entityRepository;
-
-  /**
    * {@inheritdoc}
    */
   public function __construct(
     array $configuration,
     $plugin_id,
     $plugin_definition,
-    OpignoGroupContentTypesManager $opigno_group_content_types_manager,
-    ClassResolverInterface $class_resolver,
-    EntityRepositoryInterface $entity_repository
+    OpignoGroupContentTypesManager $opigno_group_content_types_manager
   ) {
     parent::__construct($configuration, $plugin_id, $plugin_definition);
     $this->opignoGroupContentTypesManager = $opigno_group_content_types_manager;
-    $this->classResolver = $class_resolver;
-    $this->entityRepository = $entity_repository;
   }
 
   /**
@@ -76,15 +55,12 @@ class StepsBlock extends BlockBase implements ContainerFactoryPluginInterface, T
     ContainerInterface $container,
     array $configuration,
     $plugin_id,
-    $plugin_definition
-  ) {
+    $plugin_definition) {
     return new static(
       $configuration,
       $plugin_id,
       $plugin_definition,
-      $container->get('opigno_group_manager.content_types.manager'),
-      $container->get('class_resolver'),
-      $container->get('entity.repository')
+      $container->get('opigno_group_manager.content_types.manager')
     );
   }
 
@@ -114,13 +90,6 @@ class StepsBlock extends BlockBase implements ContainerFactoryPluginInterface, T
    */
   public function build() {
     $group = $this->getGroupByRouteOrContext();
-    if (!$group) {
-      // If no group is found by context or route, we don't display the block.
-      // It can happen on a module result page,
-      // seems block render is before page permissions check.
-      return [];
-    }
-    $group = $this->entityRepository->getTranslationFromContext($group);
 
     $steps = $group instanceof GroupInterface ? $this->getStepsByGroup($group) : [];
 
@@ -197,8 +166,6 @@ class StepsBlock extends BlockBase implements ContainerFactoryPluginInterface, T
         $activities,
         $attempts,
       ] = $this->getActivities($training, $course, $module);
-      // Check if activities can be navigated to via Free Navigation.
-      $free_navigation = !OpignoGroupManagerController::getGuidedNavigation($training);
       $meta->addCacheableDependency($attempts);
       $activity_status = $this->getActivityStatus($activities, $attempts, $module);
       $activity_passed = array_filter($activity_status, static function ($status) {
@@ -211,19 +178,16 @@ class StepsBlock extends BlockBase implements ContainerFactoryPluginInterface, T
         $state = $activity_status[$activity->id()] ?? 'pending';
         $current = $this->getCurrentActivityId() === $activity->id();
         $is_link = in_array($state, ['passed']);
-        $activity = $this->entityRepository->getTranslationFromContext($activity);
         $activity = [
           '#theme' => 'opigno_lp_step_module_activity',
           '#activity' => $activity,
           "#state" => $state,
           '#current' => $current,
-          '#link' => $free_navigation && $current_module && ($current || $is_link || $next)
-            ? Url::fromRoute('opigno_module.group.answer_form', [
-              'group' => $training->id(),
-              'opigno_activity' => $activity->id(),
-              'opigno_module' => $module->id(),
-            ])->toString()
-            : FALSE,
+          '#link' => $current_module && ($current || $is_link || $next) ? Url::fromRoute('opigno_module.group.answer_form', [
+            'group' => $training->id(),
+            'opigno_activity' => $activity->id(),
+            'opigno_module' => $module->id(),
+          ])->toString() : FALSE,
           '#pre_render' => [
             [$this, 'processActivityStatus'],
           ],
@@ -274,8 +238,8 @@ class StepsBlock extends BlockBase implements ContainerFactoryPluginInterface, T
    * Take a module link.
    *
    * @throws \Drupal\Component\Plugin\Exception\PluginException
-   *
    * @todo Previously it can be take or next link, it should be researched.
+   *
    */
   protected function getLink($step): Url {
     $content_step = OpignoGroupManagedContent::load($step['cid']);
@@ -291,28 +255,28 @@ class StepsBlock extends BlockBase implements ContainerFactoryPluginInterface, T
   public function getLinkToStart($step): ?Url {
     $link = NULL;
     /** @var \Drupal\opigno_learning_path\Controller\LearningPathStepsController $controller */
-    $controller = $this->classResolver->getInstanceFromDefinition(LearningPathStepsController::class);
+    $controller = \Drupal::classResolver(LearningPathStepsController::class);
     if ($step['step_first']) {
       return $this->getLink($step);
     }
-
-    $group_id = $this->getCurrentGroupId();
-    $parent_content_id = $step["step_previous"]["cid"];
-    $group = Group::load($group_id);
-    $course_entity = OpignoGroupManagedContent::load($parent_content_id);
-    $resp = $controller->getNextStep($group, $course_entity, FALSE);
-    if (($resp["#type"] ?? FALSE) != 'html_tag') {
-      // @todo an access to link should be checked here.
-      //
-      // if the response is a html type, that means the function returns
-      // a redirect message, because we reuse the legacy code
-      // that actually is not developed for the checking an access to route.
-      return Url::fromRoute('opigno_learning_path.steps.next', [
-        'group' => $group_id,
-        'parent_content' => $parent_content_id,
-      ]);
+    else {
+      $group_id = $this->getCurrentGroupId();
+      $parent_content_id = $step["step_previous"]["cid"];
+      $group = Group::load($group_id);
+      $course_entity = OpignoGroupManagedContent::load($parent_content_id);
+      $resp = $controller->getNextStep($group, $course_entity, FALSE);
+      if (($resp["#type"] ?? FALSE) != 'html_tag') {
+        // @todo an access to link should be checked here.
+        //
+        // if the response is a html type, that means the function returns
+        // a redirect message, because we reuse the legacy code
+        // that actually is not developed for the checking an access to route.
+        return Url::fromRoute('opigno_learning_path.steps.next', [
+          'group' => $group_id,
+          'parent_content' => $parent_content_id,
+        ]);
+      }
     }
-
     return $link;
   }
 
@@ -360,8 +324,7 @@ class StepsBlock extends BlockBase implements ContainerFactoryPluginInterface, T
     return [
       'processModuleList',
       'processActivityList',
-      'processActivityStatus',
+      'processActivityStatus'
     ];
   }
-
 }

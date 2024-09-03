@@ -5,22 +5,17 @@ namespace Drupal\opigno_learning_path\Controller;
 use Drupal\Core\Ajax\AjaxResponse;
 use Drupal\Core\Ajax\OpenModalDialogCommand;
 use Drupal\Core\Ajax\ReplaceCommand;
-use Drupal\Core\Cache\CacheTagsInvalidatorInterface;
-use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Controller\ControllerBase;
 use Drupal\Core\Database\Connection;
-use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\FormBuilderInterface;
-use Drupal\Core\Mail\MailManagerInterface;
-use Drupal\Core\Routing\RouteMatchInterface;
+use Drupal\Core\Link;
 use Drupal\Core\Url;
 use Drupal\group\Entity\Group;
 use Drupal\group\GroupMembership;
-use Drupal\user\UserInterface;
+use Drupal\user\Entity\User;
 use Drupal\views\Views;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
-use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 /**
@@ -43,90 +38,14 @@ class LearningPathMembershipController extends ControllerBase {
   protected $formBuilder;
 
   /**
-   * The current request.
-   *
-   * @var \Symfony\Component\HttpFoundation\Request
-   */
-  protected $request;
-
-  /**
-   * The route match service.
-   *
-   * @var \Drupal\Core\Routing\RouteMatchInterface
-   */
-  protected $routeMatch;
-
-  /**
-   * The user storage.
-   *
-   * @var \Drupal\user\UserStorageInterface
-   */
-  protected $userStorage;
-
-  /**
-   * The group content storage.
-   *
-   * @var \Drupal\group\Entity\Storage\GroupContentStorageInterface
-   */
-  protected $groupContentStorage;
-
-  /**
-   * The cache tags invalidator service.
-   *
-   * @var \Drupal\Core\Cache\CacheTagsInvalidatorInterface
-   */
-  protected $cacheInvalidator;
-
-  /**
-   * The mail plugin manager service.
-   *
-   * @var \Drupal\Core\Mail\MailManagerInterface
-   */
-  protected $mailManager;
-
-  /**
    * LearningPathMembershipController constructor.
-   *
-   * @param \Drupal\Core\Database\Connection $connection
-   *   The DB connection service.
-   * @param \Drupal\Core\Form\FormBuilderInterface $form_builder
-   *   The form builder service.
-   * @param \Drupal\Core\Entity\EntityTypeManagerInterface $entity_type_manager
-   *   The entity type manager service.
-   * @param \Symfony\Component\HttpFoundation\RequestStack $request_stack
-   *   The request stack service.
-   * @param \Drupal\Core\Routing\RouteMatchInterface $route_match
-   *   The route match service.
-   * @param \Drupal\Core\Cache\CacheTagsInvalidatorInterface $cache_invalidator
-   *   The cache tags invalidator service.
-   * @param \Drupal\Core\Config\ConfigFactoryInterface $config_factory
-   *   The config factory service.
-   * @param \Drupal\Core\Mail\MailManagerInterface $mail_manager
-   *   The mail plugin manager service.
-   *
-   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
-   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
    */
   public function __construct(
     Connection $connection,
-    FormBuilderInterface $form_builder,
-    EntityTypeManagerInterface $entity_type_manager,
-    RequestStack $request_stack,
-    RouteMatchInterface $route_match,
-    CacheTagsInvalidatorInterface $cache_invalidator,
-    ConfigFactoryInterface $config_factory,
-    MailManagerInterface $mail_manager
+    FormBuilderInterface $formBuilder
   ) {
     $this->connection = $connection;
-    $this->formBuilder = $form_builder;
-    $this->entityTypeManager = $entity_type_manager;
-    $this->request = $request_stack->getCurrentRequest();
-    $this->routeMatch = $route_match;
-    $this->userStorage = $entity_type_manager->getStorage('user');
-    $this->groupContentStorage = $entity_type_manager->getStorage('group_content');
-    $this->cacheInvalidator = $cache_invalidator;
-    $this->configFactory = $config_factory;
-    $this->mailManager = $mail_manager;
+    $this->formBuilder = $formBuilder;
   }
 
   /**
@@ -135,13 +54,7 @@ class LearningPathMembershipController extends ControllerBase {
   public static function create(ContainerInterface $container) {
     return new static(
       $container->get('database'),
-      $container->get('form_builder'),
-      $container->get('entity_type.manager'),
-      $container->get('request_stack'),
-      $container->get('current_route_match'),
-      $container->get('cache_tags.invalidator'),
-      $container->get('config.factory'),
-      $container->get('plugin.manager.mail')
+      $container->get('form_builder')
     );
   }
 
@@ -187,76 +100,113 @@ class LearningPathMembershipController extends ControllerBase {
    * @param \Drupal\group\Entity\Group $group
    *   Group.
    *
-   * @return array
-   *   The autocomplete suggestions.
-   *
-   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
-   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
+   * @return \Symfony\Component\HttpFoundation\JsonResponse
+   *   A JSON response containing the autocomplete suggestions.
    */
   public function addUserToTrainingAutocompleteSelect(Group $group): array {
+    $matches = [];
+    $default = [];
     $is_class = $group->getGroupType()->id() == 'opigno_class';
-    // Get all available users ids with access check for the current user.
-    $user_ids = $this->userStorage->getQuery()
-      ->accessCheck()
-      ->condition('uid', 0, '<>')
-      ->sort('name')
-      ->execute();
-    $users = $this->userStorage->loadMultiple($user_ids);
-
-    $options = array_reduce($users, function ($carry, $user) {
-      $id = $user->id();
-      $name = $user->getDisplayName();
-      $carry['user_' . $id] = [
-        'id' => 'user_' . $id,
-        'type' => 'user',
-        'value' => "$name (User #$id)",
-        'label' => "$name (User #$id)",
-      ];
-      return $carry;
-    }, []);
-
-    $selected = array_filter(array_map(function (GroupMembership $membership) {
-      return $membership->getUser() ? 'user_' . $membership->getUser()->id() : NULL;
-    }, $group->getMembers()));
-
-    // Check if we are on the class manage page, we can skip the following code.
-    if (!$is_class) {
-      // Get all available classes ids with access check for the current user.
-      $group_storage = $this->entityTypeManager->getStorage('group');
-      $class_ids = $group_storage->getQuery()
-        ->accessCheck()
-        ->condition('type', 'opigno_class')
-        ->sort('label')
-        ->execute();
-
-      $classes = $group_storage->loadMultiple($class_ids);
-      $is_class_added = $group->getContent('subgroup:opigno_class', []);
-      // Check if class already added.
-      $is_class_added = array_map(function ($item) {
-        return $item->getEntity()->id();
-      }, $is_class_added);
-      $is_class_added = $is_class_added ? array_values($is_class_added) : [];
-
-      $is_class_added = array_map(function ($class) {
-        return 'class_' . $class;
-      }, $is_class_added);
-
-      $selected = array_merge($selected, $is_class_added);
-      $classes = array_reduce($classes, function ($carry, $class) {
-        $id = $class->id();
-        $name = $class->label();
-        $carry['class_' . $id] = [
-          'id' => 'class_' . $id,
-          'type' => 'group',
-          'value' => "$name (Group #$id)",
-          'label' => "$name (Group #$id)",
-        ];
-        return $carry;
-      }, []);
-      $options = array_merge((array) $options, (array) $classes);
+    $string = \Drupal::request()->query->get('q');
+    // Find users by email or name.
+    $query = \Drupal::entityQuery('user')
+      ->condition('uid', 0, '<>');
+    if ($string !== NULL) {
+      $like_string = '%' . $this->connection->escapeLike($string) . '%';
+      $cond_group = $query
+        ->orConditionGroup()
+        ->condition('mail', $like_string, 'LIKE')
+        ->condition('name', $like_string, 'LIKE');
+      $query = $query
+        ->condition($cond_group);
     }
 
-    return [$options, $selected];
+    $query->sort('name');
+
+    $uids = $query->execute();
+    $users = User::loadMultiple($uids);
+
+    /** @var \Drupal\user\Entity\User $user */
+    foreach ($users as $user) {
+      $id = $user->id();
+      $name = $user->getDisplayName();
+
+      // Skip users that already members of the current group.
+      if ($group->getMember($user) !== FALSE) {
+        $default[] = 'user_' . $id;
+      }
+
+      $matches['user_' . $id] = [
+        'value' => "$name (User #$id)",
+        'label' => "$name (User #$id)",
+        'type' => 'user',
+        'id' => 'user_' . $id,
+      ];
+    }
+
+    if (!$is_class) {
+      // Find classes by name.
+      $query = \Drupal::entityQuery('group')
+        ->condition('type', 'opigno_class');
+      if ($string && $like_string) {
+        $query->condition('label', $like_string, 'LIKE');
+      }
+      $query->sort('label')
+        ->range(0, 20);
+
+      $gids = $query->execute();
+      $classes = Group::loadMultiple($gids);
+
+      $db_connection = \Drupal::service('database');
+      /** @var \Drupal\group\Entity\Group $class */
+      foreach ($classes as $class) {
+        // Check if class already added.
+        $is_class_added = $db_connection->select('group_content_field_data', 'g_c_f_d')
+          ->fields('g_c_f_d', ['id'])
+          ->condition('gid', $group->id())
+          ->condition('entity_id', $class->id())
+          ->condition('type', 'group_content_type_27efa0097d858')
+          ->execute()->fetchField();
+
+        // If class haven't added yet.
+        $id = $class->id();
+        $name = $class->label();
+        if ($is_class_added) {
+          $default[] = 'class_' . $id;
+        }
+        $matches['class_' . $id] = [
+          'value' => "$name (Group #$id)",
+          'label' => "$name (Group #$id)",
+          'type' => 'group',
+          'id' => 'class_' . $id,
+          'members' => array_reduce($class->getMembers(), function ($acc, GroupMembership $entity) {
+            $user = $entity->getGroupContent()->getEntity();
+            $id = $user->id();
+            $name = $user->getDisplayName();
+            $acc[$user->getEntityTypeId() . '_' . $user->id()] = [
+              'value' => "$name (User #$id)",
+              'label' => "$name (User #$id)",
+              'type' => 'user',
+              'id' => 'user_' . $id,
+            ];
+            return $acc;
+          }, []),
+        ];
+      }
+    }
+
+    return [$matches, $default];
+  }
+
+
+  /**
+   * Returns response for the autocompletion.
+   *
+   * @return \Symfony\Component\HttpFoundation\JsonResponse
+   */
+  public function addUserToTrainingAutocomplete(Group $group) {
+    [$matches, $default] = $this->addUserToTrainingAutocompleteSelect($group);
+    return new JsonResponse($matches);
   }
 
   /**
@@ -268,47 +218,45 @@ class LearningPathMembershipController extends ControllerBase {
    * @return \Symfony\Component\HttpFoundation\JsonResponse
    *   A JSON response containing the autocomplete suggestions.
    */
-  public function addUserToClassAutocomplete(Group $group): JsonResponse {
+  public function addUserToClassAutocomplete(Group $group) {
     $matches = [];
-    $string = $this->request->query->get('q');
-    if (!$string) {
-      return new JsonResponse($matches);
-    }
-
-    $like_string = '%' . $this->connection->escapeLike($string) . '%';
-    // Find users by email or name.
-    $query = $this->userStorage->getQuery()
-      ->condition('uid', 0, '<>')
-      ->condition('name', $like_string, 'LIKE')
-      ->sort('name')
-      ->range(0, 20);
-    $uids = $query->execute();
-
-    $count = count($uids);
-
-    if ($count < 20) {
-      $range = 20 - $count;
-      $query = $this->userStorage->getQuery()
+    $string = \Drupal::request()->query->get('q');
+    if ($string !== NULL) {
+      $like_string = '%' . $this->connection->escapeLike($string) . '%';
+      // Find users by email or name.
+      $query = \Drupal::entityQuery('user')
         ->condition('uid', 0, '<>')
-        ->condition('mail', $like_string, 'LIKE')
+        ->condition('name', $like_string, 'LIKE')
         ->sort('name')
-        ->range(0, $range);
-      $uids = array_merge($uids, $query->execute());
-    }
+        ->range(0, 20);
+      $uids = $query->execute();
 
-    $users = $this->userStorage->loadMultiple($uids);
+      $count = count($uids);
 
-    /** @var \Drupal\user\Entity\User $user */
-    foreach ($users as $user) {
-      $id = $user->id();
-      $name = $user->getDisplayName();
+      if ($count < 20) {
+        $range = 20 - $count;
+        $query = \Drupal::entityQuery('user')
+          ->condition('uid', 0, '<>')
+          ->condition('mail', $like_string, 'LIKE')
+          ->sort('name')
+          ->range(0, $range);
+        $uids = array_merge($uids, $query->execute());
+      }
 
-      $matches[] = [
-        'value' => "$name ($id)",
-        'label' => "$name ($id)",
-        'type' => 'user',
-        'id' => 'user_' . $id,
-      ];
+      $users = User::loadMultiple($uids);
+
+      /** @var \Drupal\user\Entity\User $user */
+      foreach ($users as $user) {
+        $id = $user->id();
+        $name = $user->getDisplayName();
+
+        $matches[] = [
+          'value' => "$name ($id)",
+          'label' => "$name ($id)",
+          'type' => 'user',
+          'id' => 'user_' . $id,
+        ];
+      }
     }
 
     return new JsonResponse($matches);
@@ -320,49 +268,52 @@ class LearningPathMembershipController extends ControllerBase {
    * @return \Symfony\Component\HttpFoundation\JsonResponse
    *   A JSON response containing the autocomplete suggestions.
    */
-  public function findUsersInGroupAutocomplete(): JsonResponse {
+  public function findUsersInGroupAutocomplete() {
     $matches = [];
-    $string = $this->request->query->get('q');
+    $string = \Drupal::request()->query->get('q');
 
-    if (!$string) {
-      return new JsonResponse($matches);
-    }
+    if ($string) {
+      $like_string = '%' . $this->connection->escapeLike($string) . '%';
+      /** @var \Drupal\group\Entity\Group $curr_group */
+      $curr_group = \Drupal::routeMatch()
+        ->getParameter('group');
 
-    $like_string = '%' . $this->connection->escapeLike($string) . '%';
-    /** @var \Drupal\group\Entity\Group $curr_group */
-    $curr_group = $this->routeMatch->getParameter('group');
-
-    // Find users by email or name.
-    $query = $this->userStorage->getQuery()
-      ->condition('uid', 0, '<>');
-
-    $cond_group = $query
-      ->orConditionGroup()
-      ->condition('mail', $like_string, 'LIKE')
-      ->condition('name', $like_string, 'LIKE');
-
-    $query = $query
-      ->condition($cond_group)
-      ->sort('name');
-
-    $uids = $query->execute();
-    $users = $this->userStorage->loadMultiple($uids);
-
-    /** @var \Drupal\user\Entity\User $user */
-    foreach ($users as $user) {
-      $id = $user->id();
-      $name = $user->getDisplayName();
-
-      // Remove users that are not members of current group.
-      if ($curr_group->getMember($user) === FALSE) {
-        continue;
+      if (!is_null($curr_group) && !$curr_group instanceof Group) {
+        $curr_group = Group::load($curr_group); 
       }
 
-      $matches[] = [
-        'value' => "$name ($id)",
-        'label' => $name,
-        'id' => $id,
-      ];
+      // Find users by email or name.
+      $query = \Drupal::entityQuery('user')
+        ->condition('uid', 0, '<>');
+
+      $cond_group = $query
+        ->orConditionGroup()
+        ->condition('mail', $like_string, 'LIKE')
+        ->condition('name', $like_string, 'LIKE');
+
+      $query = $query
+        ->condition($cond_group)
+        ->sort('name');
+
+      $uids = $query->execute();
+      $users = User::loadMultiple($uids);
+
+      /** @var \Drupal\user\Entity\User $user */
+      foreach ($users as $user) {
+        $id = $user->id();
+        $name = $user->getDisplayName();
+
+        // Remove users that are not members of current group.
+        if ($curr_group->getMember($user) === FALSE) {
+          continue;
+        }
+
+        $matches[] = [
+          'value' => "$name ($id)",
+          'label' => $name,
+          'id' => $id,
+        ];
+      }
     }
 
     return new JsonResponse($matches);
@@ -384,7 +335,7 @@ class LearningPathMembershipController extends ControllerBase {
    * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
    * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
    */
-  public function findGroupMember(Group $group, $class_id, $uid): AjaxResponse {
+  public function findGroupMember(Group $group, $class_id, $uid) {
     $response = new AjaxResponse();
 
     if ($class_id === '0') {
@@ -394,12 +345,14 @@ class LearningPathMembershipController extends ControllerBase {
         'learning_path-group_membership',
       ];
 
-      $group_content_ids = $this->groupContentStorage->getQuery()
+      $group_content_ids = \Drupal::entityQuery('group_content')
         ->condition('gid', $group->id())
         ->condition('type', $content_types, 'IN')
         ->sort('changed', 'DESC')
         ->execute();
-      $content = $this->groupContentStorage->loadMultiple($group_content_ids);
+      $content = \Drupal::entityTypeManager()
+        ->getStorage('group_content')
+        ->loadMultiple($group_content_ids);
 
       $users = [];
       $classes = [];
@@ -487,14 +440,14 @@ class LearningPathMembershipController extends ControllerBase {
    */
   public function deleteUser() {
     /** @var \Drupal\group\Entity\Group $group */
-    $group = $this->routeMatch->getParameter('group');
+    $group = \Drupal::routeMatch()->getParameter('group');
     if (!isset($group)) {
       throw new NotFoundHttpException();
     }
 
-    $uid = $this->request->query->get('user_id');
-    $user = $this->userStorage->load($uid);
-    if (!$user instanceof UserInterface) {
+    $uid = \Drupal::request()->query->get('user_id');
+    $user = User::load($uid);
+    if (!isset($user)) {
       throw new NotFoundHttpException();
     }
 
@@ -514,9 +467,9 @@ class LearningPathMembershipController extends ControllerBase {
    */
   public function deleteClass() {
     /** @var \Drupal\group\Entity\Group $group */
-    $group = $this->routeMatch->getParameter('group');
+    $group = \Drupal::routeMatch()->getParameter('group');
 
-    $class_id = $this->request->query->get('class_id');
+    $class_id = \Drupal::request()->query->get('class_id');
     $class = Group::load($class_id);
 
     if (!isset($group) || !isset($class)) {
@@ -524,6 +477,8 @@ class LearningPathMembershipController extends ControllerBase {
     }
 
     $content = $group->getContent();
+    $account = $this->currentUser();
+
     /** @var \Drupal\group\Entity\GroupContentInterface $item */
     foreach ($content as $item) {
       $entity = $item->getEntity();
@@ -547,12 +502,12 @@ class LearningPathMembershipController extends ControllerBase {
    */
   public function toggleRole() {
     /** @var \Drupal\group\Entity\Group $group */
-    $group = $this->routeMatch->getParameter('group');
-    $query = $this->request->query;
+    $group = \Drupal::routeMatch()->getParameter('group');
+    $query = \Drupal::request()->query;
     $uid = $query->get('uid');
-    $user = $this->userStorage->load($uid);
+    $user = User::load($uid);
     $role = $query->get('role');
-    if (!isset($group) || !$user instanceof UserInterface || !isset($role)) {
+    if (!isset($group) || !isset($user) || !isset($role)) {
       throw new NotFoundHttpException();
     }
 
@@ -590,13 +545,13 @@ class LearningPathMembershipController extends ControllerBase {
    */
   public function validate() {
     /** @var \Drupal\group\Entity\Group $group */
-    $group = $this->routeMatch->getParameter('group');
+    $group = \Drupal::routeMatch()->getParameter('group');
     $gid = $group->id();
 
-    $uid = $this->request->query->get('user_id');
-    $user = $this->userStorage->load($uid);
+    $uid = \Drupal::request()->query->get('user_id');
+    $user = User::load($uid);
 
-    if (!isset($group) || !$user instanceof UserInterface) {
+    if (!isset($group) || !isset($user)) {
       throw new NotFoundHttpException();
     }
 
@@ -607,7 +562,7 @@ class LearningPathMembershipController extends ControllerBase {
 
     $group_content = $member->getGroupContent();
 
-    $query = $this->connection
+    $query = \Drupal::database()
       ->merge('opigno_learning_path_group_user_status')
       ->key('mid', $group_content->id())
       ->insertFields([
@@ -628,14 +583,15 @@ class LearningPathMembershipController extends ControllerBase {
     if ($result) {
       // Invalidate cache.
       $tags = $member->getCacheTags();
-      $this->cacheInvalidator->invalidateTags($tags);
+      \Drupal::service('cache_tags.invalidator')
+        ->invalidateTags($tags);
 
       // Set notification.
       $message = $this->t('Enrollment validated to a new training "@name"', ['@name' => $group->label()]);
       $url = Url::fromRoute('entity.group.canonical', ['group' => $group->id()])->toString();
       opigno_set_message($uid, $message, $url);
 
-      $config = $this->config('opigno_learning_path.learning_path_settings');
+      $config = \Drupal::config('opigno_learning_path.learning_path_settings');
       $send_to_users = $config->get('opigno_learning_path_notify_users');
       if ($send_to_users) {
         // Send email.
@@ -647,7 +603,7 @@ class LearningPathMembershipController extends ControllerBase {
         $params['subject'] = $this->t('Your membership to the training @training has been approved', [
           '@training' => $group->label(),
         ]);
-        $site_config = $this->config('system.site');
+        $site_config = \Drupal::config('system.site');
         $link = $group->toUrl()->setAbsolute()->toString();
         $args = [
           '@username' => $user->getDisplayName(),
@@ -662,11 +618,35 @@ Your membership to the training @training has been approved. You can now access 
 
 @platform', $args);
 
-        $this->mailManager->mail($module, $key, $email, $lang, $params);
+        \Drupal::service('plugin.manager.mail')
+          ->mail($module, $key, $email, $lang, $params);
       }
     }
 
     return new JsonResponse();
+  }
+
+  /**
+   * Callback from RouteSubscriber::alterRoutes() to alter group module members view page.
+   * If group type is learning_path, loads form, otherwise loads the default group module members view.
+   */
+  public function alterGroupMembersRoute() {
+    $group_id = \Drupal::routeMatch()->getRawParameter('group');
+    if (!empty($group_id)) {
+      $group = Group::load($group_id);
+      if (!empty($group)) {
+        if ($group->getGroupType()->id() == 'learning_path') {
+          return \Drupal::formBuilder()->getForm('\Drupal\opigno_learning_path\Form\LearningPathMembersForm');
+        }
+      }
+    }
+
+    $view = Views::getView('group_members');
+    if ($view) {
+      $view->setDisplay('page_1');
+      $view->initHandlers();
+      return $view->buildRenderable('page_1', [$group_id]);
+    }
   }
 
 }

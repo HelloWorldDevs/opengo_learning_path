@@ -25,3 +25,8 @@ dependencies:
   - opigno_learning_path:opigno_user_selection
   - twig_field_value:twig_field_value
 configure: opigno_learning_path.learning_path_settings
+
+# Information added by Drupal.org packaging script on 2022-11-13
+version: '3.0.4'
+project: 'opigno_learning_path'
+datestamp: 1668362188

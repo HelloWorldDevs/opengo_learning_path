@@ -166,24 +166,14 @@ class LPStatus extends ContentEntityBase implements LPStatusInterface {
    */
   public function setFinished($timestamp) {
     $this->set('finished', $timestamp);
-    $is_finalized = $timestamp > 0 && !$this->hasUnfinishedModuleAttempts();
-    $this->setFinalized($is_finalized);
     return $this;
   }
 
   /**
    * {@inheritdoc}
    */
-  public function isFinished(): bool {
-    return (bool) $this->get('finalized')->getString();
-  }
-
-  /**
-   * {@inheritdoc}
-   */
-  public function setFinalized(bool $is_finalized): LPStatusInterface {
-    $this->set('finalized', $is_finalized);
-    return $this;
+  public function isFinished() {
+    return (bool) $this->finished->value != 0;
   }
 
   /**
@@ -215,40 +205,34 @@ class LPStatus extends ContentEntityBase implements LPStatusInterface {
   }
 
   /**
-   * {@inheritdoc}
+   * Returns user training status.
+   *
+   * @param int $gid
+   *   Group ID.
+   * @param int $uid
+   *   User ID.
+   * @param string $type
+   *   Kind of the query result - best|last.
+   *
+   * @return string
+   *   User training status.
    */
-  public static function getCurrentLpAttempt(GroupInterface $group, AccountInterface $user, bool $load = TRUE, bool $finished = FALSE) {
-    $results_storage = \Drupal::entityTypeManager()->getStorage('user_lp_status');
-    $query = $results_storage->getQuery();
-    $query
-      ->condition('gid', $group->id())
-      ->condition('uid', $user->id());
-    if (!$finished) {
-      $query->condition('finalized', 0);
+  public static function getTrainingStatus($gid, $uid, $type = 'best') {
+    $db_connection = \Drupal::service('database');
+    try {
+      $result = $db_connection->select('user_lp_status', 'lp')
+        ->fields('lp')
+        ->condition('gid', $gid)
+        ->condition('uid', $uid)
+        ->orderBy('finished', 'DESC')
+        ->execute()->fetchCol();
     }
-    $results = $query
-      ->sort('id', 'DESC')
-      ->execute();
-
-    if (!$results) {
-      return FALSE;
+    catch (\Exception $e) {
+      \Drupal::logger('opigno_learning_path')->error($e->getMessage());
+      \Drupal::messenger()->addMessage($e->getMessage(), 'error');
     }
-    $id = key($results);
-    return $load ? $results_storage->load($id) : $id;
-  }
 
-  /**
-   * {@inheritdoc}
-   */
-  public function hasUnfinishedModuleAttempts(): bool {
-    $unfinished = \Drupal::entityTypeManager()
-      ->getStorage('user_module_status')
-      ->getQuery()
-      ->condition('lp_status', $this->id())
-      ->condition('finished', 0)
-      ->execute();
-
-    return !empty($unfinished);
+    return array_shift($result);
   }
 
   /**
@@ -362,24 +346,6 @@ class LPStatus extends ContentEntityBase implements LPStatusInterface {
     $valid_for = $options[$valid_for] ?? $valid_for . ' months';
 
     return strtotime($valid_for, $completed_on) ?? NULL;
-  }
-
-  /**
-   * Returns LP user progress.
-   */
-  public static function learningPathUserProgress(Group $group, $uid) {
-    $progress = 0;
-    $contents = LPManagedContent::loadByLearningPathId($group->id());
-    if (!empty($contents)) {
-      $content_count = count($contents);
-      foreach ($contents as $content) {
-        $content_type = $content->getLearningPathContentType();
-        $user_score = $content_type->getUserScore($uid, $content->getEntityId());
-        $progress += $user_score;
-      }
-      $progress = round(($progress / $content_count) * 100);
-    }
-    return $progress;
   }
 
   /**
@@ -626,14 +592,9 @@ class LPStatus extends ContentEntityBase implements LPStatusInterface {
       ->setDefaultValue(0);
 
     $fields['finished'] = BaseFieldDefinition::create('timestamp')
-      ->setLabel(t('Finished timestamp'))
+      ->setLabel(t('Finished'))
       ->setDescription(t('The time that the training finished.'))
       ->setDefaultValue(0);
-
-    $fields['finalized'] = BaseFieldDefinition::create('boolean')
-      ->setLabel(t('Finalizing status'))
-      ->setDescription(t('The LP attempt finalizing status.'))
-      ->setDefaultValue(FALSE);
 
     return $fields;
   }

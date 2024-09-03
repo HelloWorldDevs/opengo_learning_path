@@ -4,17 +4,14 @@ namespace Drupal\opigno_learning_path\Controller;
 
 use Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException;
 use Drupal\Core\Controller\ControllerBase;
-use Drupal\Core\Database\Connection;
 use Drupal\Core\Entity\EntityInterface;
-use Drupal\Core\Extension\ModuleHandlerInterface;
 use Drupal\Core\Link;
 use Drupal\Core\Render\Markup;
-use Drupal\Core\Render\RendererInterface;
-use Drupal\Core\TempStore\PrivateTempStoreFactory;
 use Drupal\group\Entity\Group;
 use Drupal\group\Entity\GroupInterface;
 use Drupal\h5p\Entity\H5PContent;
 use Drupal\opigno_group_manager\Entity\OpignoGroupManagedLink;
+use Drupal\opigno_group_manager\OpignoGroupContentTypesManager;
 use Drupal\opigno_learning_path\LearningPathValidator;
 use Drupal\opigno_module\Entity\OpignoActivity;
 use Drupal\opigno_module\Entity\OpignoModule;
@@ -34,53 +31,15 @@ use Drupal\opigno_group_manager\Entity\OpignoGroupManagedContent;
  */
 class LearningPathContentController extends ControllerBase {
 
-  /**
-   * The renderer service.
-   *
-   * @var \Drupal\Core\Render\RendererInterface
-   */
-  protected $renderer;
+  private $content_types_manager;
+  protected $currentUser;
 
   /**
-   * The temporary storage.
-   *
-   * @var \Drupal\Core\TempStore\PrivateTempStore
+   * {@inheritdoc}
    */
-  protected $tmpStore;
-
-  /**
-   * The DB connection service.
-   *
-   * @var \Drupal\Core\Database\Connection
-   */
-  protected $database;
-
-  /**
-   * LearningPathContentController constructor.
-   *
-   * @param \Drupal\Core\Session\AccountProxy $current_account
-   *   The current user account.
-   * @param \Drupal\Core\Extension\ModuleHandlerInterface $module_handler
-   *   The module handler service.
-   * @param \Drupal\Core\Render\RendererInterface $renderer
-   *   The renderer service.
-   * @param \Drupal\Core\TempStore\PrivateTempStoreFactory $tmp_store
-   *   The private temporary storage service.
-   * @param \Drupal\Core\Database\Connection $database
-   *   The DB connection service.
-   */
-  public function __construct(
-    AccountProxy $current_account,
-    ModuleHandlerInterface $module_handler,
-    RendererInterface $renderer,
-    PrivateTempStoreFactory $tmp_store,
-    Connection $database
-  ) {
+  public function __construct(OpignoGroupContentTypesManager $content_types_manager, AccountProxy $current_account) {
+    $this->content_types_manager = $content_types_manager;
     $this->currentUser = $current_account;
-    $this->moduleHandler = $module_handler;
-    $this->renderer = $renderer;
-    $this->tmpStore = $tmp_store->get('opigno_group_manager');
-    $this->database = $database;
   }
 
   /**
@@ -88,11 +47,8 @@ class LearningPathContentController extends ControllerBase {
    */
   public static function create(ContainerInterface $container) {
     return new static(
-      $container->get('current_user'),
-      $container->get('module_handler'),
-      $container->get('renderer'),
-      $container->get('tempstore.private'),
-      $container->get('database')
+      $container->get('opigno_group_manager.content_types.manager'),
+      $container->get('current_user')
     );
   }
 
@@ -114,6 +70,8 @@ class LearningPathContentController extends ControllerBase {
     $view_type = ($group_type == 'opigno_course')
       ? 'manager' : 'modules';
 
+    $tempstore = \Drupal::service('tempstore.private')->get('opigno_group_manager');
+
     return [
       '#theme' => 'opigno_learning_path_courses',
       '#attached' => ['library' => ['opigno_group_manager/manage_app']],
@@ -122,8 +80,8 @@ class LearningPathContentController extends ControllerBase {
       '#learning_path_id' => $gid,
       '#group_type' => $group_type,
       '#view_type' => $view_type,
-      '#next_link' => isset($next_link) ? $this->renderer->render($next_link) : NULL,
-      '#user_has_info_card' => !$this->tmpStore->get('hide_info_card'),
+      '#next_link' => isset($next_link) ? \Drupal::service('renderer')->render($next_link) : NULL,
+      '#user_has_info_card' => $tempstore->get('hide_info_card') ? FALSE : TRUE,
       '#parent_learning_path' => $group_type == 'learning_path' ? '?learning_path=' . $gid : '',
     ];
   }
@@ -139,6 +97,7 @@ class LearningPathContentController extends ControllerBase {
       return $validation;
     }
 
+    $tempstore = \Drupal::service('tempstore.private')->get('opigno_group_manager');
     $next_link = $this->getNextLink($group);
     return [
       '#theme' => 'opigno_learning_path_modules',
@@ -147,8 +106,8 @@ class LearningPathContentController extends ControllerBase {
       '#base_href' => $request->getPathInfo(),
       '#learning_path_id' => $group->id(),
       '#module_context' => 'false',
-      '#next_link' => isset($next_link) ? $this->renderer->render($next_link) : NULL,
-      '#user_has_info_card' => !$this->tmpStore->get('hide_info_card'),
+      '#next_link' => isset($next_link) ? \Drupal::service('renderer')->render($next_link) : NULL,
+      '#user_has_info_card' => $tempstore->get('hide_info_card') ? FALSE : TRUE,
     ];
   }
 
@@ -167,8 +126,9 @@ class LearningPathContentController extends ControllerBase {
     if ($group instanceof GroupInterface) {
       $current_step = opigno_learning_path_get_current_step();
 
+      $user = \Drupal::currentUser();
       if ($current_step == 4
-        && !$group->access('administer members', $this->currentUser)) {
+        && !$group->access('administer members', $user)) {
         // Hide link if user can't access members overview tab.
         return NULL;
       }
@@ -176,30 +136,25 @@ class LearningPathContentController extends ControllerBase {
       $group_type_id = $group->getGroupType()->id();
       if ($group_type_id === 'learning_path') {
         $next_step = ($current_step < 5) ? $current_step + 1 : NULL;
-        $link_text = !$next_step ? $this->t('Publish') : $this->t('Next');
+        $link_text = !$next_step ? t('Publish') : t('Next');
       }
       elseif ($group_type_id === 'opigno_course' && $current_step < 3) {
-        $link_text = $this->t('Next');
+        $link_text = t('Next');
       }
       else {
         return $next_link;
       }
-      $next_link = Link::createFromRoute(
-        Markup::create($link_text . '<i class="fi fi-rr-angle-small-right"></i>'),
-        'opigno_learning_path.content_steps',
-        [
-          'group' => $group->id(),
-          'current' => ($current_step) ? $current_step : 0,
-        ],
-        [
-          'attributes' => [
-            'class' => [
-              'btn',
-              'btn-rounded',
-            ],
+      $next_link = Link::createFromRoute(Markup::create($link_text . '<i class="fi fi-rr-angle-small-right"></i>'), 'opigno_learning_path.content_steps', [
+        'group' => $group->id(),
+        'current' => ($current_step) ? $current_step : 0,
+      ], [
+        'attributes' => [
+          'class' => [
+            'btn',
+            'btn-rounded',
           ],
-        ]
-      )->toRenderable();
+        ],
+      ])->toRenderable();
     }
 
     return $next_link;
@@ -221,8 +176,8 @@ class LearningPathContentController extends ControllerBase {
     $courses = [];
     $group_content = $group->getContent('subgroup:opigno_course');
     foreach ($group_content as $content) {
-      /** @var \Drupal\group\Entity\GroupContent $content */
-      /** @var \Drupal\group\Entity\Group $content_entity */
+      /* @var $content \Drupal\group\Entity\GroupContent */
+      /* @var $content_entity \Drupal\group\Entity\Group */
       $content_entity = $content->getEntity();
       $courses[] = [
         'entity_id' => $content_entity->id(),
@@ -246,65 +201,33 @@ class LearningPathContentController extends ControllerBase {
     if ($group->getGroupType()->id() == 'learning_path') {
       $group_content = $group->getContent('subgroup:opigno_course');
       foreach ($group_content as $content) {
-        /** @var \Drupal\group\Entity\GroupContent $content */
-        /** @var \Drupal\group\Entity\Group $content_entity */
+        /* @var $content \Drupal\group\Entity\GroupContent */
+        /* @var $content_entity \Drupal\group\Entity\Group */
         $course = $content->getEntity();
         $course_contents = $course->getContent('opigno_module_group');
-        $cid = $course->id();
-
         foreach ($course_contents as $course_content) {
-          /** @var \Drupal\opigno_module\Entity\OpignoModule $module_entity */
+          /* @var $module_entity \Drupal\opigno_module\Entity\OpignoModule */
           $module_entity = $course_content->getEntity();
-          $mid = $module_entity->id();
-          $managed_content = OpignoGroupManagedContent::loadByProperties([
-            'group_id' => $cid,
-            'group_content_type_id' => 'ContentTypeModule',
-            'entity_id' => $mid,
-          ]);
-          $managed_content = reset($managed_content);
-
-          $success_score_min = $managed_content instanceof OpignoGroupManagedContent ? $managed_content->getSuccessScoreMin() : 0;
-          $max_activities_score = $module_entity->getMaxActivitiesScore();
-
           $modules[] = [
-            'entity_id' => $mid,
+            'entity_id' => $module_entity->id(),
             'name' => $module_entity->label(),
             'activity_count' => $this->countActivityInModule($module_entity),
             'editable' => $module_entity->access('update'),
-            'successScoreMin' => $success_score_min,
-            'maxActivitiesScore' => $max_activities_score,
-            'showError' => (int) $max_activities_score === 0 && $success_score_min > $max_activities_score,
           ];
         }
       }
     }
     // Get the direct modules.
-    $gid = $group->id();
     $group_content = $group->getContent('opigno_module_group');
-
     foreach ($group_content as $content) {
-      /** @var \Drupal\group\Entity\GroupContent $content */
-      /** @var \Drupal\opigno_module\Entity\OpignoModule  $content_entity */
+      /* @var $content \Drupal\group\Entity\GroupContent */
+      /* @var $content_entity \Drupal\opigno_module\Entity\OpignoModule */
       $content_entity = $content->getEntity();
-      $mid = $content_entity->id();
-      $managed_content = OpignoGroupManagedContent::loadByProperties([
-        'group_id' => $gid,
-        'group_content_type_id' => 'ContentTypeModule',
-        'entity_id' => $mid,
-      ]);
-      $managed_content = reset($managed_content);
-
-      $success_score_min = $managed_content instanceof OpignoGroupManagedContent ? $managed_content->getSuccessScoreMin() : 0;
-      $max_activities_score = $content_entity->getMaxActivitiesScore();
-
       $modules[] = [
-        'entity_id' => $mid,
+        'entity_id' => $content_entity->id(),
         'name' => $content_entity->label(),
         'activity_count' => $this->countActivityInModule($content_entity),
         'editable' => $content_entity->access('update'),
-        'successScoreMin' => $success_score_min,
-        'maxActivitiesScore' => $max_activities_score,
-        'showError' => $max_activities_score === 0 && $success_score_min > $max_activities_score,
       ];
     }
 
@@ -343,9 +266,8 @@ class LearningPathContentController extends ControllerBase {
       $id = $content->getEntityId();
       $x = $content->getCoordinateX();
       $y = $content->getCoordinateY();
-      $group_content_type_id = $content->getGroupContentTypeId();
 
-      if ($group_content_type_id === 'ContentTypeCourse') {
+      if ($content->getGroupContentType()->getId() == 'ContentTypeCourse') {
         // Course steps.
         if ($course_managed_contents = OpignoGroupManagedContent::loadByProperties(['group_id' => $content->getEntityId()])) {
           foreach ($course_managed_contents as $course_content) {
@@ -361,7 +283,7 @@ class LearningPathContentController extends ControllerBase {
           }
         }
       }
-      elseif ($group_content_type_id === 'ContentTypeModule') {
+      else {
         // Ordinary steps.
         foreach ($modules as $module) {
           if ($module['entity_id'] == $id) {
@@ -404,7 +326,9 @@ class LearningPathContentController extends ControllerBase {
    * Returns module activities count.
    */
   public function countActivityInModule(OpignoModule $opigno_module) {
-    $query = $this->database->select('opigno_activity', 'oa');
+    /* @var $db_connection \Drupal\Core\Database\Connection */
+    $db_connection = \Drupal::service('database');
+    $query = $db_connection->select('opigno_activity', 'oa');
     $query->fields('oa', ['id']);
     $query->fields('omr', ['omr_pid', 'child_id']);
     $query->addJoin('inner', 'opigno_activity_field_data', 'oafd', 'oa.id = oafd.id');
@@ -415,10 +339,6 @@ class LearningPathContentController extends ControllerBase {
       $query->condition('omr.parent_vid', $opigno_module->getRevisionId());
     }
     $query->condition('omr_pid', NULL, 'IS');
-    $query->groupBy('oa.id');
-    $query->groupBy('omr.omr_pid');
-    $query->groupBy('omr.child_id');
-
     $result = $query->execute();
     $result->allowRowCount = TRUE;
 
@@ -451,14 +371,15 @@ class LearningPathContentController extends ControllerBase {
 
     // Check group roles.
     $group_id = OpignoGroupContext::getCurrentGroupId();
-    if (LearningPathAccess::memberHasRole('admin', $this->currentUser, $group_id)
-      || LearningPathAccess::memberHasRole('content_manager', $this->currentUser, $group_id)
-    ) {
+    if (LearningPathAccess::memberHasRole('admin', $this->currentUser, $group_id) ||
+      LearningPathAccess::memberHasRole('content_manager', $this->currentUser, $group_id))
+    {
       return AccessResult::allowed();
     }
 
     return AccessResult::allowedIfHasPermission($this->currentUser, 'bypass group access');
   }
+
 
   /**
    * Returns conditional activities with the module.
@@ -468,7 +389,7 @@ class LearningPathContentController extends ControllerBase {
    * @param array $results
    *   Results.
    */
-  protected function getModuleConditionals(OpignoModule $opigno_module, array &$results = []) {
+  protected function getModuleConditionals(OpignoModule $opigno_module, &$results = []) {
     if ($opigno_module) {
       $activities = $this->getModuleActivitiesEntities($opigno_module);
       $conditional_h5p_types = ['H5P.TrueFalse', 'H5P.MultiChoice'];
@@ -495,7 +416,7 @@ class LearningPathContentController extends ControllerBase {
                   'correct' => $params->correct == 'true' ? TRUE : FALSE,
                   'text' => trim(strip_tags(nl2br(str_replace([
                     '\n',
-                    '\r',
+                    '\r'
                   ], '', $params->l10n->trueText)))),
                 ];
                 $activities[$key]->answers[1] = [
@@ -503,7 +424,7 @@ class LearningPathContentController extends ControllerBase {
                   'correct' => $params->correct == 'false' ? TRUE : FALSE,
                   'text' => trim(strip_tags(nl2br(str_replace([
                     '\n',
-                    '\r',
+                    '\r'
                   ], '', $params->l10n->falseText)))),
                 ];
               }
@@ -517,7 +438,7 @@ class LearningPathContentController extends ControllerBase {
                       'correct' => $answer->correct,
                       'text' => trim(strip_tags(nl2br(str_replace([
                         '\n',
-                        '\r',
+                        '\r'
                       ], '', $answer->text)))),
                     ];
                   }
@@ -587,7 +508,9 @@ class LearningPathContentController extends ControllerBase {
    */
   public function getModuleActivitiesEntities(OpignoModule $opigno_module) {
     $activities = [];
-    $query = $this->database->select('opigno_activity', 'oa');
+    /* @var $db_connection \Drupal\Core\Database\Connection */
+    $db_connection = \Drupal::service('database');
+    $query = $db_connection->select('opigno_activity', 'oa');
     $query->fields('oafd', ['id', 'vid', 'type', 'name']);
     $query->fields('omr', [
       'weight',
@@ -626,7 +549,9 @@ class LearningPathContentController extends ControllerBase {
     if (empty($datas->omr_id) || !isset($datas->max_score)) {
       return new JsonResponse(NULL, Response::HTTP_BAD_REQUEST);
     }
-    $this->database->merge('opigno_module_relationship')
+    /* @var $db_connection \Drupal\Core\Database\Connection */
+    $db_connection = \Drupal::service('database');
+    $merge_query = $db_connection->merge('opigno_module_relationship')
       ->keys([
         'omr_id' => $datas->omr_id,
       ])
@@ -648,9 +573,11 @@ class LearningPathContentController extends ControllerBase {
     if (empty($datas->omr_id)) {
       return new JsonResponse(NULL, Response::HTTP_BAD_REQUEST);
     }
+    /* @var $db_connection \Drupal\Core\Database\Connection */
+    $db_connection = \Drupal::service('database');
 
     // Load Activity before deleting relationship.
-    $relationship = $this->database
+    $relationship = $db_connection
       ->select('opigno_module_relationship', 'omr')
       ->fields('omr', ['child_id', 'group_id'])
       ->condition('omr_id', $datas->omr_id)
@@ -660,13 +587,13 @@ class LearningPathContentController extends ControllerBase {
       $opigno_activity = OpignoActivity::load($relationship->child_id);
 
       // Allow other modules to take actions.
-      $this->moduleHandler->invokeAll(
+      \Drupal::moduleHandler()->invokeAll(
         'opigno_learning_path_activity_delete',
         [$opigno_module, $opigno_activity]
       );
 
       // Delete relationship.
-      $delete_query = $this->database->delete('opigno_module_relationship');
+      $delete_query = $db_connection->delete('opigno_module_relationship');
       $delete_query->condition('omr_id', $datas->omr_id);
       $delete_query->execute();
 
@@ -677,20 +604,19 @@ class LearningPathContentController extends ControllerBase {
         ]);
 
         $added_activities = $opigno_module->getModuleActivities();
-        // Remove conditions if no activities.
+        // Remove conditions if no activities;
         foreach ($links as $link) {
           if (empty($added_activities)) {
-            $link->set('required_activities', NULL);
+            $link->set('required_activities', null);
             $link->set('required_score', 0);
             $link->save();
-          }
-          else {
+          } else {
             $activity_params = $link->get('required_activities')->getString();
-            $activity_params = unserialize($activity_params, ['allowed_classes' => FALSE]);
+            $activity_params = unserialize($activity_params);
             foreach ($activity_params as $param) {
               $options = explode('-', $param);
               if ($options[0] == $relationship->child_id) {
-                $link->set('required_activities', NULL)->save();
+                $link->set('required_activities', null)->save();
                 break;
               }
             }

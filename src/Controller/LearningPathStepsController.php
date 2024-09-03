@@ -2,7 +2,6 @@
 
 namespace Drupal\opigno_learning_path\Controller;
 
-use Drupal\Component\Datetime\TimeInterface;
 use Drupal\Core\Access\AccessResult;
 use Drupal\Core\Ajax\AjaxResponse;
 use Drupal\Core\Ajax\AppendCommand;
@@ -11,46 +10,28 @@ use Drupal\Core\Ajax\RedirectCommand;
 use Drupal\Core\Ajax\RemoveCommand;
 use Drupal\Core\Controller\ControllerBase;
 use Drupal\Core\Database\Connection;
-use Drupal\Core\Datetime\DateFormatterInterface;
-use Drupal\Core\Datetime\DrupalDateTime;
-use Drupal\Core\Entity\EntityTypeManagerInterface;
-use Drupal\Core\Extension\ModuleHandlerInterface;
 use Drupal\Core\Form\FormState;
-use Drupal\Core\Session\AccountInterface;
-use Drupal\Core\StringTranslation\TranslatableMarkup;
 use Drupal\Core\Url;
 use Drupal\group\Entity\Group;
-use Drupal\group\Entity\GroupInterface;
 use Drupal\opigno_group_manager\Controller\OpignoGroupManagerController;
 use Drupal\opigno_group_manager\Entity\OpignoGroupManagedContent;
 use Drupal\opigno_group_manager\OpignoGroupContentTypesManager;
 use Drupal\opigno_group_manager\OpignoGroupContext;
-use Drupal\opigno_learning_path\Entity\LPStatus;
+use Drupal\opigno_learning_path\Entity\LPResult;
 use Drupal\opigno_learning_path\Form\DeleteAchievementsForm;
 use Drupal\opigno_learning_path\LearningPathAccess;
 use Drupal\opigno_learning_path\LearningPathValidator;
 use Drupal\opigno_learning_path\LearningPathContent;
-use Drupal\opigno_learning_path\LPStatusInterface;
-use Drupal\opigno_learning_path\Services\LearningPathContentService;
 use Drupal\opigno_module\Entity\OpignoActivity;
 use Drupal\opigno_module\Entity\OpignoModule;
-use Drupal\opigno_module\Entity\UserModuleStatusInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
-use Symfony\Component\HttpFoundation\RequestStack;
 
 /**
- * Defines the LP steps controller.
- *
- * @package Drupal\opigno_learning_path\Controller
+ * Class LearningPathStepsController.
  */
 class LearningPathStepsController extends ControllerBase {
 
-  /**
-   * The Opigno group content type manager service.
-   *
-   * @var \Drupal\opigno_group_manager\OpignoGroupContentTypesManager
-   */
-  protected $contentTypeManager;
+  protected $content_type_manager;
 
   /**
    * Database connection.
@@ -64,57 +45,24 @@ class LearningPathStepsController extends ControllerBase {
    *
    * @var string
    */
-  protected $sourceType = 'group';
+  protected $source_type = 'group';
 
   /**
    * Group entity.
    *
-   * @var \Drupal\group\Entity\Group
+   * @var Group
    */
   protected $group;
-
-  /**
-   * The time service.
-   *
-   * @var \Drupal\Component\Datetime\TimeInterface
-   */
-  protected $time;
-
-  /**
-   * The date formatter service.
-   *
-   * @var \Drupal\Core\Datetime\DateFormatterInterface
-   */
-  protected $dateFormatter;
-
-  /**
-   * The current request.
-   *
-   * @var \Symfony\Component\HttpFoundation\Request
-   */
-  protected $request;
 
   /**
    * {@inheritdoc}
    */
   public function __construct(
     OpignoGroupContentTypesManager $content_types_manager,
-    Connection $database,
-    AccountInterface $account,
-    EntityTypeManagerInterface $entity_type_manager,
-    ModuleHandlerInterface $module_handler,
-    TimeInterface $time,
-    DateFormatterInterface $date_formatter,
-    RequestStack $request_stack
+    Connection $database
   ) {
-    $this->contentTypeManager = $content_types_manager;
+    $this->content_type_manager = $content_types_manager;
     $this->database = $database;
-    $this->currentUser = $account;
-    $this->entityTypeManager = $entity_type_manager;
-    $this->moduleHandler = $module_handler;
-    $this->time = $time;
-    $this->dateFormatter = $date_formatter;
-    $this->request = $request_stack->getCurrentRequest();
   }
 
   /**
@@ -123,39 +71,24 @@ class LearningPathStepsController extends ControllerBase {
   public static function create(ContainerInterface $container) {
     return new static(
       $container->get('opigno_group_manager.content_types.manager'),
-      $container->get('database'),
-      $container->get('current_user'),
-      $container->get('entity_type.manager'),
-      $container->get('module_handler'),
-      $container->get('datetime.time'),
-      $container->get('date.formatter'),
-      $container->get('request_stack')
+      $container->get('database')
     );
   }
 
   /**
    * Redirect to the group homepage.
    *
+   * @param string $message
    * @param bool $is_ajax
-   *   Is ajax request or not.
-   *
-   * @return \Drupal\Core\Ajax\AjaxResponse|false|\Symfony\Component\HttpFoundation\RedirectResponse
-   *   The response.
    */
-  protected function redirectToHome(bool $is_ajax = FALSE) {
-    if (!empty($this->group) && !empty($this->sourceType) && $this->sourceType == 'catalog') {
+  protected function redirectToHome($message = '', $is_ajax = FALSE) {
+    if (!empty($this->group) && !empty($this->source_type) && $this->source_type == 'catalog') {
       if ($is_ajax) {
-        $url = Url::fromRoute('entity.group.canonical', [
-          'group' => $this->group->id(),
-          'force' => 1,
-        ]);
+        $url = Url::fromRoute('entity.group.canonical', ['group' => $this->group->id(), 'force' => 1]);
         return (new AjaxResponse())->addCommand(new RedirectCommand($url->toString()));
       }
       else {
-        return $this->redirect('entity.group.canonical', [
-          'group' => $this->group->id(),
-          'force' => 1,
-        ]);
+        return $this->redirect('entity.group.canonical', ['group' => $this->group->id(), 'force' => 1]);
       }
     }
     return FALSE;
@@ -165,16 +98,12 @@ class LearningPathStepsController extends ControllerBase {
    * Provide a default failed messages for the learning path.
    *
    * @param string $type
-   *   The message type.
    * @param bool $modal
-   *   Should the message be displayed in modal or not.
    * @param string $message
-   *   The message text.
    *
    * @return mixed
-   *   The render array to display the message.
    */
-  protected function failedStep(string $type, bool $modal = FALSE, string $message = '') {
+  protected function failedStep($type, $modal = FALSE, $message = '') {
     switch ($type) {
       case 'no_first':
         $message = $this->t('No first step assigned.');
@@ -197,7 +126,7 @@ class LearningPathStepsController extends ControllerBase {
         break;
     }
 
-    if ($type !== 'none' && $redirect = $this->redirectToHome($modal)) {
+    if ($type !== 'none' && $redirect = $this->redirectToHome($message, $modal)) {
       return $redirect;
     }
 
@@ -246,24 +175,20 @@ class LearningPathStepsController extends ControllerBase {
   public function start(Group $group, $type = 'group') {
     // Create empty result attempt if current attempt doesn't exist.
     // Will be used to detect if user already started LP or not.
-    $current_attempt = LPStatus::getCurrentLpAttempt($group, $this->currentUser);
+    $current_attempt = opigno_learning_path_started($group, \Drupal::currentUser());
 
     $visibility = $group->get('field_learning_path_visibility')->value;
-    $this->sourceType = $type;
+    $this->source_type = $type;
     $this->group = $group;
 
     if (!$current_attempt) {
-      // Create training new attempt.
-      $current_attempt = LPStatus::create([
-        'uid' => $this->currentUser->id(),
-        'gid' => $group->id(),
-        'status' => 'in progress',
-        'started' => $this->time->getRequestTime(),
-        'finished' => 0,
-      ]);
-      $current_attempt->save();
+      $result = LPResult::createWithValues($group->id(),
+        \Drupal::currentUser()
+          ->id(), FALSE,
+        0
+      );
+      $result->save();
     }
-    assert(TRUE, 'Current attempt is never used.');
 
     $user = $this->currentUser();
 
@@ -271,22 +196,37 @@ class LearningPathStepsController extends ControllerBase {
     $gid = $group->id();
     $is_owner = $uid === $group->getOwnerId();
 
-    $is_ajax = $this->request->isXmlHttpRequest();
+    $is_ajax = \Drupal::request()->isXmlHttpRequest();
 
     // Load group steps.
     $steps = LearningPathContent::getAllStepsOnlyModules($gid, $uid);
-
-    $steps = array_filter($steps, static function ($step) use ($user) {
-      return LearningPathContentService::filterStep($step, $user);
-    });
-    $steps = array_values($steps);
 
     foreach ($steps as $step) {
       if (in_array($step['typology'], ['Meeting', 'ILT'])) {
         // If training starts with a mandatory live meeting
         // or instructor-led training, check requirements.
-        $is_mandatory = $step['mandatory'] === 1
-          && LearningPathContentService::filterStep($step, $user);
+        $is_mandatory = $step['mandatory'] === 1;
+
+        if ($step['typology'] === 'Meeting') {
+          /** @var \Drupal\opigno_moxtra\MeetingInterface $entity */
+          $entity = $this->entityTypeManager()
+            ->getStorage('opigno_moxtra_meeting')
+            ->load($step['id']);
+
+          if (!$entity->isMember($uid)) {
+            $is_mandatory = FALSE;
+          }
+        }
+        elseif ($step['typology'] === 'ILT') {
+          /** @var \Drupal\opigno_ilt\ILTInterface $entity */
+          $entity = $this->entityTypeManager()
+            ->getStorage('opigno_ilt')
+            ->load($step['id']);
+
+          if (!$entity->isMember($uid)) {
+            $is_mandatory = FALSE;
+          }
+        }
 
         if ($is_mandatory) {
           $name = $step['name'];
@@ -294,7 +234,7 @@ class LearningPathStepsController extends ControllerBase {
           if ($required >= 0 || ($step['typology'] == 'Meeting' && !$is_owner)) {
             if ($step['best score'] < $required || OpignoGroupManagerController::mustBeVisitedMeeting($step, $group)) {
               $course_entity = OpignoGroupManagedContent::load($step['cid']);
-              $course_content_type = $this->contentTypeManager->createInstance(
+              $course_content_type = $this->content_type_manager->createInstance(
                 $course_entity->getGroupContentTypeId()
               );
 
@@ -312,6 +252,9 @@ class LearningPathStepsController extends ControllerBase {
             }
           }
         }
+      }
+      else {
+        break;
       }
     }
 
@@ -352,7 +295,8 @@ class LearningPathStepsController extends ControllerBase {
           $filtered = array_filter($results, function ($result) use ($results, $step) {
             if (isset($step['parent'])) {
               $step_parent = $step['parent'];
-              $result_parent = $results[$result->parent_id] ?? NULL;
+              $result_parent = isset($results[$result->parent_id])
+                ? $results[$result->parent_id] : NULL;
               if (!isset($result_parent)
                 || $result_parent->typology !== $step_parent['typology']
                 || (int) $result_parent->entity_id !== (int) $step_parent['id']
@@ -378,7 +322,7 @@ class LearningPathStepsController extends ControllerBase {
           $form_state->addBuildInfo('args', [$group]);
           $form = $this->formBuilder()->buildForm(DeleteAchievementsForm::class, $form_state);
           if ($is_ajax) {
-            $redirect = $this->redirectToHome(TRUE);
+            $redirect = $this->redirectToHome('', TRUE);
             if ($redirect) {
               return $redirect;
             }
@@ -397,8 +341,8 @@ class LearningPathStepsController extends ControllerBase {
     $freeNavigation = !OpignoGroupManagerController::getGuidedNavigation($group);
     if ($freeNavigation) {
       $content = OpignoGroupManagedContent::getFirstStep($group->id());
-      if ($content instanceof OpignoGroupManagedContent && $content->getGroupContentTypeId() != 'ContentTypeCourse') {
-        $content_type = $this->contentTypeManager->createInstance($content->getGroupContentTypeId());
+      if ($content->getGroupContentTypeId() != 'ContentTypeCourse') {
+        $content_type = $this->content_type_manager->createInstance($content->getGroupContentTypeId());
         $step_url = $content_type->getStartContentUrl($content->getEntityId(), $group->id());
         if ($is_ajax) {
           return (new AjaxResponse())->addCommand(new RedirectCommand($step_url->toString()));
@@ -414,7 +358,7 @@ class LearningPathStepsController extends ControllerBase {
     $step_resumed_cid = ($visibility === 'public' && $uid == 0) ? FALSE : opigno_learning_path_resumed_step($steps);
     if ($step_resumed_cid) {
       $content = OpignoGroupManagedContent::load($step_resumed_cid);
-      if ($content instanceof OpignoGroupManagedContent && in_array($content->getGroupContentTypeId(), [
+      if (in_array($content->getGroupContentTypeId(), [
         'ContentTypeMeeting',
         'ContentTypeILT',
       ])) {
@@ -424,26 +368,23 @@ class LearningPathStepsController extends ControllerBase {
             $step_resumed_cid = $steps[$i + 1]['cid'];
             $content = OpignoGroupManagedContent::load($step_resumed_cid);
             break;
-          }
+          };
         }
       }
-
-      if ($content instanceof OpignoGroupManagedContent) {
-        // Find and load the content type linked to this content.
-        $content_type = $this->contentTypeManager->createInstance($content->getGroupContentTypeId());
-        $step_url = $content_type->getStartContentUrl($content->getEntityId(), $group->id());
-        // Before redirecting, keep the content ID in context.
-        OpignoGroupContext::setCurrentContentId($step_resumed_cid);
-        OpignoGroupContext::setGroupId($group->id());
-        // Finally, redirect the user to the first step.
-        if ($is_ajax) {
-          return (new AjaxResponse())->addCommand(new RedirectCommand($step_url->toString()));
-        }
-        else {
-          return $this->redirect($step_url->getRouteName(), $step_url->getRouteParameters(), $step_url->getOptions());
-        }
+      // Find and load the content type linked to this content.
+      $content_type = $this->content_type_manager->createInstance($content->getGroupContentTypeId());
+      $step_url = $content_type->getStartContentUrl($content->getEntityId(), $group->id());
+      // Before redirecting, keep the content ID in context.
+      OpignoGroupContext::setCurrentContentId($step_resumed_cid);
+      OpignoGroupContext::setGroupId($group->id());
+      // Finally, redirect the user to the first step.
+      if ($is_ajax) {
+        return (new AjaxResponse())->addCommand(new RedirectCommand($step_url->toString()));
       }
-    }
+      else {
+        return $this->redirect($step_url->getRouteName(), $step_url->getRouteParameters(), $step_url->getOptions());
+      }
+    };
 
     // Get the first step of the learning path. If no steps, show a message.
     $first_step = reset($steps);
@@ -455,7 +396,7 @@ class LearningPathStepsController extends ControllerBase {
     $first_step = OpignoGroupManagedContent::load($first_step['cid']);
 
     // Find and load the content type linked to this content.
-    $content_type = $this->contentTypeManager->createInstance($first_step->getGroupContentTypeId());
+    $content_type = $this->content_type_manager->createInstance($first_step->getGroupContentTypeId());
 
     // Finally, get the "start" URL
     // If no URL, show a message.
@@ -478,107 +419,14 @@ class LearningPathStepsController extends ControllerBase {
   }
 
   /**
-   * Restarts the LP attempt for the user.
-   *
-   * @param \Drupal\group\Entity\GroupInterface $group
-   *   The LP group to create an attempt for.
-   * @param string $type
-   *   The page type, needed for the "opigno_learning_path.steps.type_start"
-   *   route.
-   *
-   * @return \Drupal\Core\Ajax\AjaxResponse
-   *   The redirect response.
-   *
-   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
-   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
-   * @throws \Drupal\Core\Entity\EntityStorageException
-   */
-  public function restart(GroupInterface $group, $type = 'group'): AjaxResponse {
-    $response = new AjaxResponse();
-    $gid = $group->id();
-    $storage = $this->entityTypeManager->getStorage('user_lp_status');
-    $unfinished_attempts = $storage->loadByProperties([
-      'uid' => $this->currentUser->id(),
-      'gid' => $gid,
-      'finalized' => 0,
-    ]);
-
-    // Finish all unfinished LP attempts if they're passed or failed.
-    $error = [];
-    $timestamp = $this->time->getRequestTime();
-    if ($unfinished_attempts) {
-      $finished_statuses = ['passed', 'failed'];
-      foreach ($unfinished_attempts as $attempt) {
-        if ($attempt instanceof LPStatusInterface && in_array($attempt->getStatus(), $finished_statuses)) {
-          $attempt->setFinished($timestamp)->save();
-        }
-        else {
-          $error[] = $attempt;
-        }
-      }
-    }
-
-    // Create a new LP attempt.
-    if (!$error) {
-      // Close unfinished module attempts for the LP if there are any.
-      $unfinished_module_attempts = $this->entityTypeManager
-        ->getStorage('user_module_status')
-        ->loadByProperties([
-          'user_id' => $this->currentUser->id(),
-          'learning_path' => $gid,
-          'finished' => 0,
-        ]);
-      if ($unfinished_module_attempts) {
-        foreach ($unfinished_module_attempts as $module_attempt) {
-          if ($module_attempt instanceof UserModuleStatusInterface) {
-            $module_attempt->setFinished($timestamp)->save();
-          }
-        }
-      }
-
-      $uid = $this->currentUser->id();
-      $gid = $group->id();
-      $new_attempt = $storage->create([
-        'uid' => $uid,
-        'gid' => $gid,
-        'status' => 'in progress',
-        'started' => $timestamp,
-        'finished' => 0,
-      ]);
-      $new_attempt->save();
-
-      // Update the record in LP achievements table.
-      $this->database->update('opigno_learning_path_achievements')
-        ->fields([
-          'status' => 'pending',
-          'score' => 0,
-          'progress' => 0,
-          'time' => 0,
-          'registered' => DrupalDateTime::createFromTimestamp($timestamp)->format(DrupalDateTime::FORMAT),
-          'completed' => NULL,
-        ])
-        ->condition('uid', $uid)
-        ->condition('gid', $gid)
-        ->execute();
-    }
-
-    // Redirect to the LP start route.
-    $redirect_url = Url::fromRoute('opigno_learning_path.steps.type_start',
-      ['group' => $gid, 'type' => $type]
-    )->toString();
-    $response->addCommand(new RedirectCommand($redirect_url));
-
-    return $response;
-  }
-
-  /**
    * Redirect the user to the next step.
    */
   public function getNextStep(Group $group, OpignoGroupManagedContent $parent_content, $content_update = TRUE) {
     // Get the user score of the parent content.
     // First, get the content type object of the parent content.
-    $content_type = $this->contentTypeManager->createInstance($parent_content->getGroupContentTypeId());
-    $user_score = $content_type->getUserScore($this->currentUser->id(), $parent_content->getEntityId());
+    $content_type = $this->content_type_manager->createInstance($parent_content->getGroupContentTypeId());
+    $user_score = $content_type->getUserScore(\Drupal::currentUser()
+      ->id(), $parent_content->getEntityId());
 
     // If no no score and content is mandatory, show a message.
     if ($user_score === FALSE && $parent_content->isMandatory()) {
@@ -603,10 +451,6 @@ class LearningPathStepsController extends ControllerBase {
       $steps = LearningPathContent::getAllStepsOnlyModules($gid, $uid);
     }
 
-    $steps = array_filter($steps, static function ($step) use ($user) {
-      return LearningPathContentService::filterStep($step, $user);
-    });
-    $steps = array_values($steps);
 
     // Find current & next step.
     $count = count($steps);
@@ -625,14 +469,14 @@ class LearningPathStepsController extends ControllerBase {
       $name = $current_step['name'];
       $required = $current_step['required score'];
       if ($required >= 0 || $current_step['typology'] == 'Meeting') {
-        // Check if it's "skills module" with skills which user is already
-        // passed.
+        // Check if it's "skills module" with skills which user is already passed.
         if ($current_step['typology'] == 'Module') {
-          $module = $this->entityTypeManager
+          $module = \Drupal::entityTypeManager()
             ->getStorage('opigno_module')
             ->load($current_step['id']);
+          $moduleHandler = \Drupal::service('module_handler');
 
-          if ($this->moduleHandler->moduleExists('opigno_skills_system') && $module->getSkillsActive()) {
+          if ($moduleHandler->moduleExists('opigno_skills_system') && $module->getSkillsActive()) {
             $current_step['current attempt score'] = $current_step['best score'];
           }
         }
@@ -643,7 +487,7 @@ class LearningPathStepsController extends ControllerBase {
           OpignoGroupManagerController::mustBeVisitedMeeting($current_step, $group) && !$is_owner) {
 
           $course_entity = OpignoGroupManagedContent::load($current_step['cid']);
-          $course_content_type = $this->contentTypeManager->createInstance(
+          $course_content_type = $this->content_type_manager->createInstance(
             $course_entity->getGroupContentTypeId()
           );
           $current_step_url = $course_content_type->getStartContentUrl(
@@ -695,7 +539,7 @@ class LearningPathStepsController extends ControllerBase {
               }
             }
           }
-          if ($content_update) {
+          if($content_update) {
             $this->setGroupAndContext($group->id(), $current_step['cid']);
           }
           return $message;
@@ -713,7 +557,7 @@ class LearningPathStepsController extends ControllerBase {
         if ($required >= 0) {
           if ($course['best score'] < $required) {
             $module_content = OpignoGroupManagedContent::getFirstStep($course['id']);
-            $module_content_type = $this->contentTypeManager->createInstance(
+            $module_content_type = $this->content_type_manager->createInstance(
               $module_content->getGroupContentTypeId()
             );
             $module_url = $module_content_type->getStartContentUrl(
@@ -721,7 +565,7 @@ class LearningPathStepsController extends ControllerBase {
               $gid
             );
 
-            if ($content_update) {
+            if($content_update) {
               $this->setGroupAndContext($group->id(), $module_content->id());
             }
             return $this->failedStep('none', FALSE, $this->requiredStepMessage($name, $required, $module_url->toString()));
@@ -732,7 +576,7 @@ class LearningPathStepsController extends ControllerBase {
           if ($course['attempts'] === 0) {
             $module_content = OpignoGroupManagedContent::getFirstStep($course['id']);
 
-            if ($content_update) {
+            if($content_update) {
               $this->setGroupAndContext($group->id(), $module_content->id());
             }
             return $this->failedStep('none', FALSE, $this->requiredStepMessage($name));
@@ -741,30 +585,56 @@ class LearningPathStepsController extends ControllerBase {
       }
     }
 
-    $next_step = $steps[$current_step_index + 1];
-    $is_mandatory = $current_step
-      && $current_step['mandatory'] === 1
-      && LearningPathContentService::filterStep($current_step, $user);
+    // Skip live meetings and instructor-led trainings.
+    $skip_types = []; //['Meeting', 'ILT'];
+    for ($next_step_index = $current_step_index + 1;
+    $next_step_index < $count
+    && in_array($steps[$next_step_index]['typology'], $skip_types);
+    ++$next_step_index) {
+      $next_step = $steps[$next_step_index];
+      $is_mandatory = $next_step['mandatory'] === 1;
 
-    if ($is_mandatory) {
-      $name = $current_step['name'];
-      $required = $current_step['required score'];
-      // But if the live meeting or instructor-led training is
-      // a mandatory and not passed,
-      // block access to the next step.
-      if ($required > 0) {
-        if ($current_step['best score'] < $required) {
-          return $this->failedStep('none', FALSE, $this->requiredStepMessage($name, $required));
+      if ($next_step['typology'] === 'Meeting') {
+        /** @var \Drupal\opigno_moxtra\MeetingInterface $entity */
+        $entity = $this->entityTypeManager()
+          ->getStorage('opigno_moxtra_meeting')
+          ->load($next_step['id']);
+
+        if (!$entity->isMember($uid)) {
+          $is_mandatory = FALSE;
         }
       }
-      else {
-        if ($current_step['attempts'] === 0) {
-          return $this->failedStep('none', FALSE, $this->requiredStepMessage($name));
+      elseif ($next_step['typology'] === 'ILT') {
+        /** @var \Drupal\opigno_ilt\ILTInterface $entity */
+        $entity = $this->entityTypeManager()
+          ->getStorage('opigno_ilt')
+          ->load($next_step['id']);
+
+        if (!$entity->isMember($uid)) {
+          $is_mandatory = FALSE;
+        }
+      }
+
+      if ($is_mandatory) {
+        $name = $next_step['name'];
+        $required = $next_step['required score'];
+        // But if the live meeting or instructor-led training is
+        // a mandatory and not passed,
+        // block access to the next step.
+        if ($required > 0) {
+          if ($next_step['best score'] < $required) {
+            return $this->failedStep('none', FALSE, $this->requiredStepMessage($name, $required));
+          }
+        }
+        else {
+          if ($next_step['attempts'] === 0) {
+            return $this->failedStep('none', FALSE, $this->requiredStepMessage($name));
+          }
         }
       }
     }
 
-    return $next_step ?? NULL;
+    return $steps[$next_step_index] ?? NULL;
   }
 
   /**
@@ -786,7 +656,7 @@ class LearningPathStepsController extends ControllerBase {
       $this->messenger()->addWarning($this->t('You reached the last content of that training.'));
       return $this->redirect('entity.group.canonical', ['group' => $group->id()]);
     }
-    if (!isset($next_step['cid'])) {
+    if(!isset($next_step['cid'])) {
       return $next_step;
     }
     // Load next step entity.
@@ -797,93 +667,39 @@ class LearningPathStepsController extends ControllerBase {
       $this->setGroupAndContext($group->id(), $next_step->id());
     }
     // Finally, redirect the user to the next step URL.
-    $next_step_content_type = $this->contentTypeManager->createInstance($next_step->getGroupContentTypeId());
+    $next_step_content_type = $this->content_type_manager->createInstance($next_step->getGroupContentTypeId());
     $next_step_url = $next_step_content_type->getStartContentUrl($next_step->getEntityId(), $group->id());
     return $this->redirect($next_step_url->getRouteName(), $next_step_url->getRouteParameters(), $next_step_url->getOptions());
   }
 
   /**
    * Show the finish page and save the score.
-   *
-   * @throws \Drupal\Core\Entity\EntityStorageException
-   *
-   * @deprecated in opigno:3.0.9 and is removed from opigno:3.1.0. The method is never used.
-   * @see https://www.drupal.org/project/opigno/issues/3090004
-   *
-   * @todo Remove this method in opigno:3.1.0.
    */
   public function finish(Group $group) {
     // Get the "user passed" status.
-    $current_uid = $this->currentUser->id();
+    $current_uid = \Drupal::currentUser()->id();
     $user_passed = LearningPathValidator::userHasPassed($current_uid, $group);
-    $user_status = $user_passed ? 'passed' : 'failed';
+
     if ($user_passed) {
-      $latest_attempt = LPStatus::getCurrentLpAttempt(
-        $group,
-        $this->currentUser,
-        TRUE,
-        TRUE
-      );
-      // Legacy code refactored.
-      if ($latest_attempt !== FALSE) {
-        $this->updateResultAttempt($latest_attempt, $user_status);
+
+      // Store the result in database.
+      $current_result_attempt = LPResult::getCurrentLPAttempt($group, \Drupal::currentUser());
+      if ($current_result_attempt) {
+        $current_result_attempt->setHasPassed($user_passed);
+        $current_result_attempt->setFinished(\Drupal::time()->getRequestTime());
+        $current_result_attempt->save();
       }
       else {
-        $this->createResultAttempt($group, $user_status);
+        // Store the result in database.
+        $result = LPResult::createWithValues($group->id(), $current_uid, $user_passed, \Drupal::time()->getRequestTime());
+        $result->save();
       }
+
       return $this->failedStep('passed');
     }
     else {
       return $this->failedStep('failed');
     }
-  }
-
-  /**
-   * Update and finalize the result attempt.
-   *
-   * @param bool|\Drupal\opigno_learning_path\Entity\LPStatus $attempt
-   *   The attempt.
-   * @param string $user_status
-   *   The user status.
-   *
-   * @throws \Drupal\Core\Entity\EntityStorageException
-   *
-   * @deprecated in opigno:3.0.9 and is removed from opigno:3.1.0. The method is never used.
-   * @see https://www.drupal.org/project/opigno/issues/3090004
-   */
-  public function updateResultAttempt(LPStatus $attempt, string $user_status): void {
-    $training_score = opigno_learning_path_get_score($attempt->getTrainingId(), $attempt->getUserId(), TRUE);
-    $attempt->setScore($training_score);
-    $attempt->setStatus($user_status);
-    $attempt->setFinished($this->time->getRequestTime());
-    $attempt->save();
-  }
-
-  /**
-   * Create result attempt.
-   *
-   * @param \Drupal\group\Entity\Group $group
-   *   The group entity.
-   * @param string $user_status
-   *   The user status.
-   *
-   * @throws \Drupal\Core\Entity\EntityStorageException
-   *
-   * @deprecated in opigno:3.0.9 and is removed from opigno:3.1.0. The method is never used.
-   * @see https://www.drupal.org/project/opigno/issues/3090004
-   */
-  public function createResultAttempt(Group $group, string $user_status): void {
-    // Store the result in database.
-    // @todo the attempt should be exist on this step,
-    // otherwise we will not able to calculate the start date.
-    $result = LPStatus::create([
-      'uid' => $this->currentUser->id(),
-      'gid' => $group->id(),
-      'status' => $user_status,
-      'started' => $this->time->getRequestTime(),
-      'finished' => $this->time->getRequestTime(),
-    ]);
-    $result->save();
   }
 
   /**
@@ -929,21 +745,16 @@ class LearningPathStepsController extends ControllerBase {
   /**
    * Steps list.
    *
-   * @param \Drupal\group\Entity\Group $group
-   *   The group to get steps for.
+   * @param Group $group
    *
    * @return array
-   *   The list of steps.
-   *
-   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
-   * @throws \Drupal\Component\Plugin\Exception\PluginException
-   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
    */
-  public function listSteps(Group $group): array {
-    $date_formatter = $this->dateFormatter;
+  public function listSteps(Group $group) {
+    /** @var \Drupal\Core\Datetime\DateFormatterInterface $date_formatter */
+    $date_formatter = \Drupal::service('date.formatter');
 
     $group_id = $group->id();
-    $uid = $this->currentUser->id();
+    $uid = \Drupal::currentUser()->id();
 
     $steps = opigno_learning_path_get_steps($group_id, $uid);
 
@@ -975,8 +786,8 @@ class LearningPathStepsController extends ControllerBase {
     // Check if there is a next step and if the user has access to it.
     // Get the user score of the parent content.
     // First, get the content type object of the parent content.
-    $content_type = $this->contentTypeManager->createInstance($parent_content->getGroupContentTypeId());
-    $user_score = $content_type->getUserScore($this->currentUser->id(), $parent_content->getEntityId());
+    $content_type = $this->content_type_manager->createInstance($parent_content->getGroupContentTypeId());
+    $user_score = $content_type->getUserScore(\Drupal::currentUser()->id(), $parent_content->getEntityId());
 
     // If no no score and content is mandatory, return forbidden.
     if ($user_score === FALSE && $parent_content->isMandatory()) {
@@ -994,16 +805,18 @@ class LearningPathStepsController extends ControllerBase {
       return AccessResult::neutral();
     }
 
-    $user = $this->currentUser();
-    $group_visibility = $group->get('field_learning_path_visibility')->getValue()[0]['value'];
+    if ($group->hasField('field_learning_path_visibility')) {
+      $user = $this->currentUser();
+      $group_visibility = $group->get('field_learning_path_visibility')->getValue()[0]['value'];
 
-    if ($user->isAnonymous() && $group_visibility != 'public') {
-      return AccessResult::forbidden();
-    }
+      if ($user->isAnonymous() && $group_visibility != 'public') {
+        return AccessResult::forbidden();
+      }
 
-    $access = LearningPathAccess::statusGroupValidation($group, $user);
-    if ($access === FALSE) {
-      return AccessResult::forbidden();
+      $access = LearningPathAccess::statusGroupValidation($group, $user);
+      if ($access === FALSE) {
+        return AccessResult::forbidden();
+      }
     }
 
     return AccessResult::allowed();
@@ -1036,15 +849,15 @@ class LearningPathStepsController extends ControllerBase {
    *
    * @param string $name
    *   Step name.
-   * @param int|null $required
+   * @param int $required
    *   Minimum score.
    * @param string $link
    *   Link to try again.
    *
-   * @return \Drupal\Core\StringTranslation\TranslatableMarkup
-   *   The message.
+   * @return string
+   *   Message.
    */
-  protected function requiredStepMessage(string $name, ?int $required = NULL, string $link = ''): TranslatableMarkup {
+  protected function requiredStepMessage($name, $required = NULL, $link = '') {
     if (empty($required)) {
       // The simple message.
       return $this->t('A required step: %step should be done first.', [
@@ -1052,15 +865,15 @@ class LearningPathStepsController extends ControllerBase {
       ]);
     }
     else {
+      $text = 'You should first get a minimum score of %required to the step %step before going further.';
       if (!empty($link)) {
-        return $this->t("You should first get a minimum score of %required to the step %step before going further. <a href=':link'>Try again.</a>", [
+        return $this->t("{$text} <a href=':link'>Try again.</a>", [
           '%step' => $name,
           '%required' => $required,
           ':link' => $link,
         ]);
-      }
-      else {
-        return $this->t('You should first get a minimum score of %required to the step %step before going further.', [
+      } else {
+        return $this->t("{$text}", [
           '%step' => $name,
           '%required' => $required,
         ]);

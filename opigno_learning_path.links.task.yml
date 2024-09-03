@@ -1,3 +1,8 @@
+#opigno_learning_path.manager.index:
+#  route_name: opigno_learning_path.manager.index
+#  title: 'Learning path manager'
+#  base_route: entity.group.canonical
+
 opigno_learning_path.courses:
   route_name: opigno_learning_path.learning_path_courses
   title: 'Learning path courses'
@@ -8,8 +13,8 @@ opigno_learning_path.modules:
   title: 'Learning path modules'
   base_route: entity.group.canonical
 
-opigno_learning_path.steps.type_start:
-  route_name: opigno_learning_path.steps.type_start
+opigno_learning_path.steps.start:
+  route_name: opigno_learning_path.steps.start
   title: 'Start'
   base_route: entity.group.canonical
 

@@ -17,7 +17,7 @@ class RouteSubscriber extends RouteSubscriberBase {
     // Alters '/group/{group}/members' route path from Group module
     // to use this path in custom controller.
     if ($route = $collection->get('view.group_members.page_1')) {
-      $route->setPath('/group/{group}/members/default');
+      $route->setDefault('_controller', '\Drupal\opigno_learning_path\Controller\LearningPathMembershipController::alterGroupMembersRoute');
     }
 
     if ($route = $collection->get('entity.group.join')) {

@@ -104,7 +104,8 @@ class TrainingAccessTest extends LearningPathBrowserTestBase {
     $this->drupalLogout();
 
     $subscribe_path = Url::fromRoute('entity.group.join', ['group' => $group->id()]);
-    $start_path = Url::fromRoute('opigno_learning_path.steps.type_start', ['group' => $group->id()]);
+    $start_path = Url::fromRoute('opigno_learning_path.steps.start', ['group' => $group->id()]);
+    $canonical_path = Url::fromRoute('entity.group.canonical', ['group' => $group->id()]);
 
     // Create authenticated user to check a training access.
     $user_one = $this->drupalCreateUser();

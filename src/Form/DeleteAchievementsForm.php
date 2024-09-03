@@ -154,8 +154,8 @@ class DeleteAchievementsForm extends ConfirmFormBase {
             $modules = $group->getContentEntities('opigno_module_group');
             $group_courses = $group->getContent('subgroup:opigno_course');
             foreach ($group_courses as $content) {
-              /** @var \Drupal\group\Entity\GroupContent $content */
-              /** @var \Drupal\group\Entity\Group $content_entity */
+              /* @var $content \Drupal\group\Entity\GroupContent */
+              /* @var $content_entity \Drupal\group\Entity\Group */
               $course = $content->getEntity();
               $course_contents = $course->getContent('opigno_module_group');
               foreach ($course_contents as $course_content) {
@@ -175,7 +175,7 @@ class DeleteAchievementsForm extends ConfirmFormBase {
             }
           }
 
-          $form_state->setRedirect('opigno_learning_path.steps.type_start', [
+          $form_state->setRedirect('opigno_learning_path.steps.start', [
             'group' => $gid,
           ]);
         }

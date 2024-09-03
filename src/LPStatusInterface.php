@@ -4,7 +4,7 @@ namespace Drupal\opigno_learning_path;
 
 use Drupal\Core\Entity\ContentEntityInterface;
 use Drupal\Core\Session\AccountInterface;
-use Drupal\group\Entity\GroupInterface;
+use Drupal\opigno_moxtra\MeetingResultInterface;
 
 /**
  * Provides an interface defining a User Learning Path Attempt Status entity.
@@ -149,21 +149,10 @@ interface LPStatusInterface extends ContentEntityInterface {
   /**
    * Checks if the training finished.
    *
-   * @return bool
+   * @return \Drupal\opigno_learning_path\LatestActivityInterface
    *   Boolean, true if the training was finished, false otherwise.
    */
-  public function isFinished(): bool;
-
-  /**
-   * Sets th "finalized" field value.
-   *
-   * @param bool $is_finalized
-   *   Is the LP status entity finalized or not.
-   *
-   * @return \Drupal\opigno_learning_path\LPStatusInterface
-   *   The called LP status entity.
-   */
-  public function setFinalized(bool $is_finalized): LPStatusInterface;
+  public function isFinished();
 
   /**
    * Gets the training started timestamp.
@@ -191,36 +180,5 @@ interface LPStatusInterface extends ContentEntityInterface {
    *   Boolean, true if the training was started, false otherwise.
    */
   public function isStarted();
-
-  /**
-   * Returns LP attempt.
-   *
-   * @param \Drupal\group\Entity\GroupInterface $group
-   *   Learning path group.
-   * @param \Drupal\Core\Session\AccountInterface $user
-   *   User account.
-   * @param bool $load
-   *   Load entity.
-   * @param bool $finished
-   *   Load finished attempts.
-   *
-   * @return \Drupal\opigno_learning_path\Entity\LPStatus|bool
-   *   LPResult object or FALSE if not found.
-   *
-   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
-   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
-   */
-  public static function getCurrentLpAttempt(GroupInterface $group, AccountInterface $user, bool $load = TRUE, bool $finished = FALSE);
-
-  /**
-   * Checks if the LP attempt has related unfinished module attempts or not.
-   *
-   * @return bool
-   *   If the current LP attempt has related unfinished module attempts or not.
-   *
-   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
-   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
-   */
-  public function hasUnfinishedModuleAttempts(): bool;
 
 }

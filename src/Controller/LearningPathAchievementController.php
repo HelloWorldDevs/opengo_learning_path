@@ -9,9 +9,7 @@ use Drupal\Core\Ajax\ReplaceCommand;
 use Drupal\Core\Controller\ControllerBase;
 use Drupal\Core\Database\Connection;
 use Drupal\Core\Datetime\DateFormatterInterface;
-use Drupal\Core\Entity\EntityRepositoryInterface;
-use Drupal\Core\Entity\EntityTypeManagerInterface;
-use Drupal\Core\Extension\ModuleHandlerInterface;
+use Drupal\Core\Datetime\DrupalDateTime;
 use Drupal\Core\Link;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
@@ -21,20 +19,16 @@ use Drupal\opigno_group_manager\Controller\OpignoGroupManagerController;
 use Drupal\opigno_ilt\Entity\ILT;
 use Drupal\opigno_learning_path\Entity\LPStatus;
 use Drupal\opigno_learning_path\Progress;
-use Drupal\opigno_learning_path\Services\LearningPathContentService;
-use Drupal\opigno_learning_path\Services\UserAccessManager;
 use Drupal\opigno_module\Entity\OpignoActivity;
 use Drupal\opigno_module\Entity\OpignoModule;
-use Drupal\opigno_module\Entity\UserModuleStatusInterface;
 use Drupal\opigno_module\OpignoModuleBadges;
 use Drupal\opigno_moxtra\Entity\Meeting;
+use Drupal\user\Entity\User;
 use Drupal\user\UserInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
 /**
- * Defines the LP achievements controller.
- *
- * @package Drupal\opigno_learning_path\Controller
+ * Class LearningPathAchievementController.
  */
 class LearningPathAchievementController extends ControllerBase {
 
@@ -60,53 +54,12 @@ class LearningPathAchievementController extends ControllerBase {
   protected $dateFormatter;
 
   /**
-   * The user access manager.
-   *
-   * @var \Drupal\opigno_learning_path\Services\UserAccessManager
+   * {@inheritdoc}
    */
-  protected $userAccessManager;
-
-  /**
-   * Service entity repository.
-   *
-   * @var \Drupal\Core\Entity\EntityRepositoryInterface
-   */
-  protected EntityRepositoryInterface $entityRepository;
-
-  /**
-   * LearningPathAchievementController constructor.
-   *
-   * @param \Drupal\Core\Database\Connection $database
-   *   The DB connection service.
-   * @param \Drupal\opigno_learning_path\Progress $progress
-   *   The LP progress service.
-   * @param \Drupal\Core\Datetime\DateFormatterInterface $date_formatter
-   *   The date formatter service.
-   * @param \Drupal\opigno_learning_path\Services\UserAccessManager $user_access_manager
-   *   The user access manager.
-   * @param \Drupal\Core\Entity\EntityTypeManagerInterface $entity_type_manager
-   *   The entity type manager service.
-   * @param \Drupal\Core\Extension\ModuleHandlerInterface $module_handler
-   *   The module handler service.
-   * @param \Drupal\Core\Entity\EntityRepositoryInterface $entity_repository
-   *   The entity repository service.
-   */
-  public function __construct(
-    Connection $database,
-    Progress $progress,
-    DateFormatterInterface $date_formatter,
-    UserAccessManager $user_access_manager,
-    EntityTypeManagerInterface $entity_type_manager,
-    ModuleHandlerInterface $module_handler,
-    EntityRepositoryInterface $entity_repository
-  ) {
+  public function __construct(Connection $database, Progress $progress, DateFormatterInterface $date_formatter) {
     $this->database = $database;
     $this->progress = $progress;
     $this->dateFormatter = $date_formatter;
-    $this->userAccessManager = $user_access_manager;
-    $this->entityTypeManager = $entity_type_manager;
-    $this->moduleHandler = $module_handler;
-    $this->entityRepository = $entity_repository;
   }
 
   /**
@@ -116,11 +69,7 @@ class LearningPathAchievementController extends ControllerBase {
     return new static(
       $container->get('database'),
       $container->get('opigno_learning_path.progress'),
-      $container->get('date.formatter'),
-      $container->get('opigno_learning_path.user_access_manager'),
-      $container->get('entity_type.manager'),
-      $container->get('module_handler'),
-      $container->get('entity.repository')
+      $container->get('date.formatter')
     );
   }
 
@@ -135,21 +84,27 @@ class LearningPathAchievementController extends ControllerBase {
    * @return int
    *   Max score.
    */
-  protected function getActivityMaxScore(OpignoModule $module, OpignoActivity $activity): int {
-    $query = $this->database->select('opigno_module_relationship', 'omr')
-      ->fields('omr', ['max_score'])
-      ->condition('omr.child_id', $activity->id())
-      ->condition('omr.child_vid', $activity->getRevisionId())
-      ->condition('omr.activity_status', 1);
+  protected function get_activity_max_score($module, $activity) {
+    $moduleHandler = \Drupal::service('module_handler');
 
-    if (!$this->moduleHandler->moduleExists('opigno_skills_system')
-      || !$module->getSkillsActive()
-      || !$module->getModuleSkillsGlobal()
-    ) {
-      $query->condition('omr.parent_id', $module->id())
-        ->condition('omr.parent_vid', $module->getRevisionId());
+    if ($moduleHandler->moduleExists('opigno_skills_system') && $module->getSkillsActive() && $module->getModuleSkillsGlobal()) {
+      $query = $this->database->select('opigno_module_relationship', 'omr')
+        ->fields('omr', ['max_score'])
+        ->condition('omr.child_id', $activity->id())
+        ->condition('omr.child_vid', $activity->getRevisionId())
+        ->condition('omr.activity_status', 1);
+      $results = $query->execute()->fetchAll();
     }
-    $results = $query->execute()->fetchAll();
+    else {
+      $query = $this->database->select('opigno_module_relationship', 'omr')
+        ->fields('omr', ['max_score'])
+        ->condition('omr.parent_id', $module->id())
+        ->condition('omr.parent_vid', $module->getRevisionId())
+        ->condition('omr.child_id', $activity->id())
+        ->condition('omr.child_vid', $activity->getRevisionId())
+        ->condition('omr.activity_status', 1);
+      $results = $query->execute()->fetchAll();
+    }
 
     if (empty($results)) {
       return 0;
@@ -160,53 +115,152 @@ class LearningPathAchievementController extends ControllerBase {
   }
 
   /**
+   * Returns step renderable array.
+   *
+   * @param array $step
+   *   Step.
+   *
+   * @return array
+   *   Step renderable array.
+   */
+  protected function build_step_name(array $step) {
+    return [
+      '#type' => 'container',
+      '#attributes' => [
+        'class' => ['lp_step_name'],
+      ],
+      [
+        '#type' => 'html_tag',
+        '#tag' => 'span',
+        '#attributes' => [
+          'class' => ['lp_step_name_title'],
+        ],
+        '#value' => $step['name'],
+      ],
+      [
+        '#type' => 'html_tag',
+        '#tag' => 'span',
+        '#attributes' => [
+          'class' => ['lp_step_name_activities'],
+        ],
+        '#value' => ' &dash; ' . $step['activities'] . ' Activities',
+      ],
+    ];
+  }
+
+  /**
+   * Returns step score renderable array.
+   *
+   * @param array $step
+   *   Step.
+   *
+   * @return array
+   *   Step score renderable array.
+   */
+  protected function build_step_score(array $step) {
+    $uid = $this->currentUser()->id();
+
+    if (opigno_learning_path_is_attempted($step, $uid)) {
+      $score = $step['best score'];
+
+      return [
+        '#type' => 'container',
+        [
+          '#type' => 'html_tag',
+          '#tag' => 'span',
+          '#value' => $score . '%',
+        ],
+        [
+          '#type' => 'container',
+          '#attributes' => [
+            'class' => ['lp_step_result_bar'],
+          ],
+          [
+            '#type' => 'html_tag',
+            '#tag' => 'div',
+            '#attributes' => [
+              'class' => ['lp_step_result_bar_value'],
+              'style' => "width: $score%",
+            ],
+            '#value' => '',
+          ],
+        ],
+      ];
+    }
+
+    return ['#markup' => '&nbsp;'];
+  }
+
+  /**
+   * Returns step state renderable array.
+   *
+   * @param array $step
+   *   Step.
+   *
+   * @return array
+   *   Step state renderable array.
+   */
+  protected function build_step_state(array $step) {
+    $uid = $this->currentUser()->id();
+    $status = opigno_learning_path_get_step_status($step, $uid);
+    $markups = [
+      'pending' => '<span class="lp_step_state_pending"></span>'
+      . t('Pending'),
+      'failed' => '<span class="lp_step_state_failed"></span>'
+      . t('Failed'),
+      'passed' => '<span class="lp_step_state_passed"></span>'
+      . t('Passed'),
+    ];
+    $markup = isset($markups[$status]) ? $markups[$status] : '&dash;';
+    return ['#markup' => $markup];
+  }
+
+  /**
    * Returns module panel renderable array.
    *
    * @param \Drupal\group\Entity\GroupInterface $training
    *   Group.
+   * @param null|\Drupal\group\Entity\GroupInterface $course
+   *   Group.
    * @param \Drupal\opigno_module\Entity\OpignoModule $module
    *   Module.
-   * @param \Drupal\group\Entity\GroupInterface|null $course
-   *   Group.
-   * @param \Drupal\Core\Session\AccountInterface|null $account
-   *   The user account.
    *
    * @return array
    *   Module panel renderable array.
    *
    * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
-   * @throws \Drupal\Component\Plugin\Exception\PluginException
    * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
-   * @throws \Drupal\Core\TempStore\TempStoreException
    */
-  protected function buildModulePanel(
-    GroupInterface $training,
-    OpignoModule $module,
-    ?GroupInterface $course = NULL,
-    ?AccountInterface $account = NULL
-  ): array {
+  protected function build_module_panel(GroupInterface $training, GroupInterface $course = NULL, OpignoModule $module, AccountInterface $account = NULL) {
+    /** @var \Drupal\Core\Datetime\DateFormatterInterface $date_formatter */
+    $date_formatter = \Drupal::service('date.formatter');
     $user = $this->currentUser($account);
+    $moduleHandler = \Drupal::service('module_handler');
 
     // Get training latest certification timestamp.
     $latest_cert_date = LPStatus::getTrainingStartDate($training, $user->id());
 
-    $parent = $course ?? $training;
-    // It will keep the parent id (training) as the group context for the course
-    // page.
+    $parent = isset($course) ? $course : $training;
+    // It will keep the parent id (training) as the group context for the course page.
     $update_group_context = !isset($course);
     $step = opigno_learning_path_get_module_step($parent->id(), $user->id(), $module, $latest_cert_date, $update_group_context);
+    $completed_on = $step['completed on'];
+    $completed_on = $completed_on > 0
+      ? $date_formatter->format($completed_on, 'custom', 'F d, Y')
+      : '';
 
     /** @var \Drupal\opigno_module\Entity\OpignoModule $module */
     $module = OpignoModule::load($step['id']);
     /** @var \Drupal\opigno_module\Entity\UserModuleStatus[] $attempts */
     $attempts = $module->getModuleAttempts($user, NULL, $latest_cert_date);
 
-    if ($this->moduleHandler->moduleExists('opigno_skills_system') && $module->getSkillsActive() && $module->getModuleSkillsGlobal() && !empty($attempts)) {
+    if ($moduleHandler->moduleExists('opigno_skills_system') && $module->getSkillsActive() && $module->getModuleSkillsGlobal() && !empty($attempts)) {
       $activities_from_module = $module->getModuleActivities();
       $activity_ids = array_keys($activities_from_module);
       $attempt = $this->getTargetAttempt($attempts, $module);
 
-      $query = $this->database->select('opigno_answer_field_data', 'o_a_f_d');
+      $db_connection = \Drupal::service('database');
+      $query = $db_connection->select('opigno_answer_field_data', 'o_a_f_d');
       $query->leftJoin('opigno_module_relationship', 'o_m_r', 'o_a_f_d.activity = o_m_r.child_id');
       $query->addExpression('MAX(o_a_f_d.activity)', 'id');
       $query->condition('o_a_f_d.user_id', $user->id())
@@ -226,8 +280,8 @@ class LearningPathAchievementController extends ControllerBase {
     }
     /** @var \Drupal\opigno_module\Entity\OpignoActivity[] $activities */
     $activities = array_map(function ($activity) {
-      $activity = OpignoActivity::load($activity->id);
-      return $this->entityRepository->getTranslationFromContext($activity);
+      /** @var \Drupal\opigno_module\Entity\OpignoActivity $activity */
+      return OpignoActivity::load($activity->id);
     }, $activities);
 
     if (!empty($attempts)) {
@@ -242,9 +296,10 @@ class LearningPathAchievementController extends ControllerBase {
       $attempt = NULL;
       $max_score = !empty($activities)
         ? array_sum(array_map(function ($activity) use ($module) {
-          return (int) $this->getActivityMaxScore($module, $activity);
+          return (int) $this->get_activity_max_score($module, $activity);
         }, $activities))
         : 0;
+      $score_percent = 0;
       $score = 0;
     }
     $activities_done = 0;
@@ -255,7 +310,7 @@ class LearningPathAchievementController extends ControllerBase {
         ? $activity->getUserAnswer($module, $attempt, $user)
         : NULL;
       $score = isset($answer) ? $answer->getScore() : 0;
-      $max_score = (int) $this->getActivityMaxScore($module, $activity);
+      $max_score = (int) $this->get_activity_max_score($module, $activity);
 
       if ($max_score == 0 && $activity->get('auto_skills')->getValue()[0]['value'] == 1) {
         $max_score = 10;
@@ -313,6 +368,15 @@ class LearningPathAchievementController extends ControllerBase {
       '#rows' => $activities,
     ];
 
+    $training_id = $training->id();
+    $module_id = $module->id();
+    if (isset($course)) {
+      $course_id = $course->id();
+      $id = "module_panel_${training_id}_${course_id}_${module_id}";
+    }
+    else {
+      $id = "module_panel_${training_id}_${module_id}";
+    }
     $info_items = [
       [
         '#type' => 'inline_template',
@@ -331,7 +395,7 @@ class LearningPathAchievementController extends ControllerBase {
         ],
       ],
     ];
-    if ($module && $attempt && $attempt->isEvaluated()) {
+    if ($module && $attempt) {
       $see_activity = Link::createFromRoute(
         $this->t('See activity results'),
         'opigno_module.module_result',
@@ -360,29 +424,17 @@ class LearningPathAchievementController extends ControllerBase {
    *   Group ID.
    * @param int $module
    *   Module ID.
-   * @param int|null $latest_cert_date
-   *   The latest certification date timestamp.
-   * @param \Drupal\Core\Session\AccountInterface|null $account
-   *   The user account.
    *
    * @return int
    *   Approved activities.
-   *
-   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
-   * @throws \Drupal\Component\Plugin\Exception\PluginException
-   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
-   * @throws \Drupal\Core\TempStore\TempStoreException
    */
-  protected function moduleApprovedActivities(
-    int $parent,
-    int $module,
-    ?int $latest_cert_date = NULL,
-    ?AccountInterface $account = NULL
-  ): int {
+  protected function module_approved_activities($parent, $module, $latest_cert_date = NULL, AccountInterface $account = NULL) {
     $approved = 0;
     $user = $this->currentUser($account);
     $parent = Group::load($parent);
     $module = OpignoModule::load($module);
+    $moduleHandler = \Drupal::service('module_handler');
+
     $step = opigno_learning_path_get_module_step($parent->id(), $user->id(), $module, $latest_cert_date);
 
     /** @var \Drupal\opigno_module\Entity\OpignoModule $module */
@@ -390,12 +442,13 @@ class LearningPathAchievementController extends ControllerBase {
     /** @var \Drupal\opigno_module\Entity\UserModuleStatus[] $attempts */
     $attempts = $module->getModuleAttempts($user, NULL, $latest_cert_date);
 
-    if ($this->moduleHandler->moduleExists('opigno_skills_system') && $module->getSkillsActive() && $module->getModuleSkillsGlobal() && !empty($attempts)) {
+    if ($moduleHandler->moduleExists('opigno_skills_system') && $module->getSkillsActive() && $module->getModuleSkillsGlobal() && !empty($attempts)) {
       $activities_from_module = $module->getModuleActivities();
       $activity_ids = array_keys($activities_from_module);
       $attempt = $this->getTargetAttempt($attempts, $module);
 
-      $query = $this->database->select('opigno_answer_field_data', 'o_a_f_d');
+      $db_connection = \Drupal::service('database');
+      $query = $db_connection->select('opigno_answer_field_data', 'o_a_f_d');
       $query->leftJoin('opigno_module_relationship', 'o_m_r', 'o_a_f_d.activity = o_m_r.child_id');
       $query->addExpression('MAX(o_a_f_d.activity)', 'id');
       $query->condition('o_a_f_d.user_id', $user->id())
@@ -416,17 +469,27 @@ class LearningPathAchievementController extends ControllerBase {
     }
     /** @var \Drupal\opigno_module\Entity\OpignoActivity[] $activities */
     $activities = array_map(function ($activity) {
-      $activity = OpignoActivity::load($activity->id);
-      return $this->entityRepository->getTranslationFromContext($activity);
+      /** @var \Drupal\opigno_module\Entity\OpignoActivity $activity */
+      return OpignoActivity::load($activity->id);
     }, $activities);
 
     if (!empty($attempts)) {
       // If "newest" score - get the last attempt,
       // else - get the best attempt.
       $attempt = $this->getTargetAttempt($attempts, $module);
+      $max_score = $attempt->calculateMaxScore();
+      $score_percent = $attempt->getAttemptScore();
+      $score = round($score_percent * $max_score / 100);
     }
     else {
       $attempt = NULL;
+      $max_score = !empty($activities)
+        ? array_sum(array_map(function ($activity) use ($module) {
+          return (int) $this->get_activity_max_score($module, $activity);
+        }, $activities))
+        : 0;
+      $score_percent = 0;
+      $score = 0;
     }
 
     $activities = array_map(function ($activity) use ($user, $module, $attempt) {
@@ -435,6 +498,8 @@ class LearningPathAchievementController extends ControllerBase {
       $answer = isset($attempt)
         ? $activity->getUserAnswer($module, $attempt, $user)
         : NULL;
+      $score = isset($answer) ? $answer->getScore() : 0;
+      $max_score = (int) $this->get_activity_max_score($module, $activity);
 
       return [
         isset($answer) ? 'lp_step_state_passed' : 'lp_step_state_failed',
@@ -463,17 +528,8 @@ class LearningPathAchievementController extends ControllerBase {
    *
    * @return array
    *   Course steps renderable array.
-   *
-   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
-   * @throws \Drupal\Component\Plugin\Exception\PluginException
-   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
-   * @throws \Drupal\Core\TempStore\TempStoreException
    */
-  protected function buildCourseSteps(
-    GroupInterface $training,
-    GroupInterface $course,
-    ?AccountInterface $account = NULL
-  ): array {
+  protected function build_course_steps(GroupInterface $training, GroupInterface $course, AccountInterface $account = NULL) {
     $user = $this->currentUser($account);
     $steps = opigno_learning_path_get_steps($course->id(), $user->id());
 
@@ -492,7 +548,7 @@ class LearningPathAchievementController extends ControllerBase {
       $completed = $this->getComplitedByStep($step);
       $time_spent = $time_spent ? $this->dateFormatter->formatInterval($time_spent) : 0;
       $completed = $completed ? $this->dateFormatter->format($completed, 'custom', 'm/d/Y') : '';
-      [$approved, $approved_percent] = $this->getApprovedModuleByStep($step, $user, $latest_cert_date, $training);
+      list($approved, $approved_percent) = $this->getApprovedModuleByStep($step, $user, $latest_cert_date, $training);
       $badges = $this->getModulesStatusBadges($step, $training, $user->id());
 
       /** @var \Drupal\opigno_module\Entity\OpignoModule $module */
@@ -509,14 +565,14 @@ class LearningPathAchievementController extends ControllerBase {
           'value' => $approved,
           'percent' => $approved_percent,
         ],
-        '#activities' => $this->buildModulePanel($training, $module, $course, $user),
+        '#activities' => $this->build_module_panel($training, $course, $module, $user),
       ];
     }, $steps);
 
     return [
       '#theme' => 'opigno_learning_path_training_course_content',
       '#course_id' => $course->id(),
-      [$course_steps],
+      $course_steps,
     ];
   }
 
@@ -527,24 +583,11 @@ class LearningPathAchievementController extends ControllerBase {
    *   Parent training group entity.
    * @param \Drupal\group\Entity\GroupInterface $course
    *   Course group entity.
-   * @param int|null $latest_cert_date
-   *   The latest certificate date timestamp.
-   * @param \Drupal\Core\Session\AccountInterface|null $user
-   *   The user account.
    *
    * @return array
    *   Course passed steps.
-   *
-   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
-   * @throws \Drupal\Component\Plugin\Exception\PluginException
-   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
    */
-  protected function courseStepsPassed(
-    GroupInterface $training,
-    GroupInterface $course,
-    ?int $latest_cert_date = NULL,
-    ?AccountInterface $user = NULL
-  ): array {
+  protected function course_steps_passed(GroupInterface $training, GroupInterface $course, $latest_cert_date = NULL, $user = NULL) {
     $user = $user ?: $this->currentUser();
     $steps = opigno_learning_path_get_steps($course->id(), $user->id(), NULL, $latest_cert_date);
 
@@ -590,15 +633,12 @@ class LearningPathAchievementController extends ControllerBase {
    */
   public function getApprovedModuleByStep(&$step, $user, $latest_cert_date, $group): array {
     $module = OpignoModule::load($step['id']);
-    if ($this->moduleHandler->moduleExists('opigno_skills_system') && $module->getSkillsActive()) {
+    $moduleHandler = \Drupal::service('module_handler');
+    if ($moduleHandler->moduleExists('opigno_skills_system') && $module->getSkillsActive()) {
       $attempts = $module->getModuleAttempts($user, NULL, $latest_cert_date);
       $attempt = $this->getTargetAttempt($attempts, $module);
 
-      $account = $this->entityTypeManager->getStorage('user')->load($attempt->getOwnerId());
-      if (!$account instanceof AccountInterface) {
-        return [0, 0];
-      }
-
+      $account = User::load($attempt->getOwnerId());
       $answers = $module->userAnswers($account, $attempt);
       $count_answers_from_step = count($answers);
 
@@ -608,7 +648,7 @@ class LearningPathAchievementController extends ControllerBase {
       $step['progress'] = 1;
     }
     else {
-      $approved_activities = $this->moduleApprovedActivities($group->id(), $step['id'], $latest_cert_date, $user);
+      $approved_activities = $this->module_approved_activities($group->id(), $step['id'], $latest_cert_date, $user);
       $approved = $approved_activities . '/' . $step['activities'];
       $approved_percent = $approved_activities / $step['activities'] * 100;
     }
@@ -624,7 +664,7 @@ class LearningPathAchievementController extends ControllerBase {
    * Copy of legacy code.
    */
   public function getStatusPercentCourseByStep($step, $latest_cert_date, $group, $user): array {
-    $course_steps = $this->courseStepsPassed($group, Group::load($step['id']), $latest_cert_date, $user);
+    $course_steps = $this->course_steps_passed($group, Group::load($step['id']), $latest_cert_date, $user);
     $passed = $course_steps['passed'] . '/' . $course_steps['total'];
     $passed_percent = round(($course_steps['passed'] / $course_steps['total']) * 100);
     $score = $step['best score'];
@@ -646,7 +686,7 @@ class LearningPathAchievementController extends ControllerBase {
     $badges = 0;
     if (
       in_array($step['typology'], ['Course', 'Module']) &&
-      $this->moduleHandler->moduleExists('opigno_module')
+      \Drupal::moduleHandler()->moduleExists('opigno_module')
     ) {
       $result = OpignoModuleBadges::opignoModuleGetBadges($uid, $group->id(), $step['typology'], $step['id']);
       if ($result) {
@@ -661,17 +701,11 @@ class LearningPathAchievementController extends ControllerBase {
    *
    * @param \Drupal\group\Entity\GroupInterface $group
    *   Group.
-   * @param \Drupal\Core\Session\AccountInterface|null $account
-   *   The user account.
    *
    * @return array
    *   LP steps.
-   *
-   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
-   * @throws \Drupal\Component\Plugin\Exception\PluginException
-   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
    */
-  protected function buildLpSteps(GroupInterface $group, AccountInterface $account = NULL): array {
+  protected function build_lp_steps(GroupInterface $group, AccountInterface $account = NULL) {
     $user = $this->currentUser($account);
     $uid = $user->id();
 
@@ -690,7 +724,33 @@ class LearningPathAchievementController extends ControllerBase {
     }
 
     $steps = array_filter($steps, function ($step) use ($user) {
-      return LearningPathContentService::filterStep($step, $user);
+      if ($step['typology'] === 'Meeting') {
+        // If the user have not the collaborative features role.
+        if (!$user->hasPermission('view meeting entities')) {
+          return FALSE;
+        }
+
+        // If the user is not a member of the meeting.
+        /** @var \Drupal\opigno_moxtra\MeetingInterface $meeting */
+        $meeting = \Drupal::entityTypeManager()
+          ->getStorage('opigno_moxtra_meeting')
+          ->load($step['id']);
+        if (!$meeting->isMember($user->id())) {
+          return FALSE;
+        }
+      }
+      elseif ($step['typology'] === 'ILT') {
+        // If the user is not a member of the ILT.
+        /** @var \Drupal\opigno_ilt\ILTInterface $ilt */
+        $ilt = \Drupal::entityTypeManager()
+          ->getStorage('opigno_ilt')
+          ->load($step['id']);
+        if (!$ilt->isMember($user->id())) {
+          return FALSE;
+        }
+      }
+
+      return TRUE;
     });
 
     $steps = array_map(static function ($step) use ($uid, $latest_cert_date) {
@@ -705,19 +765,19 @@ class LearningPathAchievementController extends ControllerBase {
       '#attributes' => [
         'id' => 'training_steps_' . $group->id(),
       ],
-      0 => array_map(function ($step) use ($group, $user, $latest_cert_date) {
+      array_map(function ($step) use ($group, $user, $latest_cert_date) {
         return [
           '#theme' => 'opigno_learning_path_training_step',
           '#step' => $step,
           '#is_module' => $this->isModule($step),
-          [$this->trainingStepContentBuild($step, $group, $user, $latest_cert_date)],
+          $this->trainingStepContentBuild($step, $group, $user, $latest_cert_date),
         ];
       }, $steps),
     ];
   }
 
   /**
-   * {@inheritdoc}
+   *
    */
   protected function currentUser(AccountInterface $account = NULL) {
     if ($account) {
@@ -727,12 +787,131 @@ class LearningPathAchievementController extends ControllerBase {
   }
 
   /**
+   * Returns training timeline.
+   *
+   * @param \Drupal\group\Entity\GroupInterface $group
+   *   Group.
+   *
+   * @return array
+   *   Training timeline.
+   *
+   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
+   * @throws \Drupal\Component\Plugin\Exception\PluginException
+   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
+   */
+  protected function build_training_timeline(GroupInterface $group) {
+    /** @var \Drupal\Core\Datetime\DateFormatterInterface $date_formatter */
+    $date_formatter = \Drupal::service('date.formatter');
+    $user = $this->currentUser();
+
+    $latest_cert_date = LPStatus::getTrainingStartDate($group, $user->id());
+
+    $result = (int) $this->database
+      ->select('opigno_learning_path_achievements', 'a')
+      ->fields('a')
+      ->condition('uid', $user->id())
+      ->condition('gid', $group->id())
+      ->condition('status', 'completed')
+      ->countQuery()
+      ->execute()
+      ->fetchField();
+    if ($latest_cert_date || $result === 0) {
+      // If training is not completed, generate steps.
+      $steps = opigno_learning_path_get_steps($group->id(), $user->id(), NULL, $latest_cert_date);
+      $steps = array_filter($steps, function ($step) {
+        return $step['mandatory'];
+      });
+      $steps = array_filter($steps, function ($step) use ($user) {
+        if ($step['typology'] === 'Meeting') {
+          // If the user have not the collaborative features role.
+          if (!$user->hasPermission('view meeting entities')) {
+            return FALSE;
+          }
+
+          // If the user is not a member of the meeting.
+          /** @var \Drupal\opigno_moxtra\MeetingInterface $meeting */
+          $meeting = \Drupal::entityTypeManager()
+            ->getStorage('opigno_moxtra_meeting')
+            ->load($step['id']);
+          if (!$meeting->isMember($user->id())) {
+            return FALSE;
+          }
+        }
+        elseif ($step['typology'] === 'ILT') {
+          // If the user is not a member of the ILT.
+          /** @var \Drupal\opigno_ilt\ILTInterface $ilt */
+          $ilt = \Drupal::entityTypeManager()
+            ->getStorage('opigno_ilt')
+            ->load($step['id']);
+          if (!$ilt->isMember($user->id())) {
+            return FALSE;
+          }
+        }
+
+        return TRUE;
+      });
+      $steps = array_map(function ($step) use ($user, $latest_cert_date, $group) {
+        $status = opigno_learning_path_get_step_status($step, $user->id(), TRUE, $latest_cert_date, $group->id());
+        if ($status == 'passed') {
+          $step['passed'] = opigno_learning_path_is_passed($step, $user->id());
+        }
+        return $step;
+      }, $steps);
+    }
+    else {
+      // Load steps from cache table.
+      $results = $this->database
+        ->select('opigno_learning_path_step_achievements', 'a')
+        ->fields('a', [
+          'name', 'status', 'completed', 'typology', 'entity_id',
+        ])
+        ->condition('uid', $user->id())
+        ->condition('gid', $group->id())
+        ->condition('mandatory', 1)
+        ->execute()
+        ->fetchAll();
+
+      $steps = array_map(function ($result) {
+        // Convert datetime string to timestamp.
+        if (isset($result->completed)) {
+          $completed = DrupalDateTime::createFromFormat(DrupalDateTime::FORMAT, $result->completed);
+          $completed_timestamp = $completed->getTimestamp();
+        }
+        else {
+          $completed_timestamp = 0;
+        }
+
+        return [
+          'name' => $result->name,
+          'passed' => $result->status === 'passed',
+          'completed on' => $completed_timestamp,
+          'typology' => $result->typology,
+          'id' => $result->entity_id,
+        ];
+      }, $results);
+    }
+
+    $items = [];
+    foreach ($steps as $step) {
+      $items[] = [
+        'label' => $step['name'],
+        'completed_on' => $step['completed on'] > 0 ?
+          $date_formatter->format($step['completed on'], 'custom', 'F d, Y') : '',
+        'status' => opigno_learning_path_get_step_status($step, $user->id(), TRUE, $latest_cert_date, $group->id()),
+      ];
+    }
+
+    return [
+      '#theme' => 'opigno_learning_path_training_timeline',
+      '#steps' => $items,
+    ];
+  }
+
+  /**
    * Returns training summary.
    *
    * @param \Drupal\group\Entity\GroupInterface $group
    *   Group.
-   * @param \Drupal\Core\Session\AccountInterface|null $account
-   *   The user account.
    *
    * @return array
    *   Training summary.
@@ -741,7 +920,7 @@ class LearningPathAchievementController extends ControllerBase {
    * @throws \Drupal\Component\Plugin\Exception\PluginException
    * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
    */
-  protected function buildTrainingSummary(GroupInterface $group, AccountInterface $account = NULL): array {
+  protected function build_training_summary(GroupInterface $group, AccountInterface $account = NULL) {
     $gid = $group->id();
     $uid = $this->currentUser($account)->id();
     return $this->progress->getProgressAjaxContainer($gid, $uid, '', 'achievements-page', TRUE);
@@ -750,10 +929,8 @@ class LearningPathAchievementController extends ControllerBase {
   /**
    * Returns training array.
    *
-   * @param \Drupal\group\Entity\GroupInterface|null $group
+   * @param \Drupal\group\Entity\GroupInterface $group
    *   Group.
-   * @param \Drupal\Core\Session\AccountInterface|null $account
-   *   The user account.
    *
    * @return array
    *   Training array.
@@ -762,12 +939,12 @@ class LearningPathAchievementController extends ControllerBase {
    * @throws \Drupal\Component\Plugin\Exception\PluginException
    * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
    */
-  protected function buildTraining(GroupInterface $group = NULL, AccountInterface $account = NULL): array {
+  protected function build_training(GroupInterface $group = NULL, AccountInterface $account = NULL) {
     return [
       '#theme' => 'opigno_learning_path_training',
       '#label' => $group->label(),
-      'summary' => $this->buildTrainingSummary($group, $account),
-      'details' => $this->buildLpSteps($group, $account),
+      'summary' => $this->build_training_summary($group, $account),
+      'details' => $this->build_lp_steps($group, $account),
       'image' => $group->get('field_learning_path_media_image')->view([
         'label' => 'hidden',
         'type' => 'media_thumbnail',
@@ -783,7 +960,7 @@ class LearningPathAchievementController extends ControllerBase {
    *
    * @param \Drupal\group\Entity\GroupInterface $training
    *   Training group.
-   * @param \Drupal\group\Entity\GroupInterface $course
+   * @param null|\Drupal\group\Entity\GroupInterface $course
    *   Course group.
    * @param \Drupal\opigno_module\Entity\OpignoModule $opigno_module
    *   Opigno module.
@@ -791,16 +968,12 @@ class LearningPathAchievementController extends ControllerBase {
    * @return \Drupal\Core\Ajax\AjaxResponse
    *   Response.
    */
-  public function courseModulePanelAjax(
-    GroupInterface $training,
-    GroupInterface $course,
-    OpignoModule $opigno_module
-  ): AjaxResponse {
+  public function course_module_panel_ajax(GroupInterface $training, GroupInterface $course, OpignoModule $opigno_module) {
     $training_id = $training->id();
     $course_id = $course->id();
     $module_id = $opigno_module->id();
     $selector = "#module_panel_${training_id}_${course_id}_${module_id}";
-    $content = $this->buildModulePanel($training, $opigno_module, $course);
+    $content = $this->build_module_panel($training, $course, $opigno_module);
     $content['#attributes']['data-ajax-loaded'] = TRUE;
     $response = new AjaxResponse();
     $response->addCommand(new ReplaceCommand($selector, $content));
@@ -818,11 +991,11 @@ class LearningPathAchievementController extends ControllerBase {
    * @return \Drupal\Core\Ajax\AjaxResponse
    *   Response.
    */
-  public function trainingModulePanelAjax(GroupInterface $group, OpignoModule $opigno_module): AjaxResponse {
+  public function training_module_panel_ajax(GroupInterface $group, OpignoModule $opigno_module) {
     $training_id = $group->id();
     $module_id = $opigno_module->id();
     $selector = "#module_panel_${training_id}_${module_id}";
-    $content = $this->buildModulePanel($group, $opigno_module);
+    $content = $this->build_module_panel($group, NULL, $opigno_module);
     $content['#attributes']['data-ajax-loaded'] = TRUE;
     $response = new AjaxResponse();
     $response->addCommand(new ReplaceCommand($selector, $content));
@@ -838,9 +1011,9 @@ class LearningPathAchievementController extends ControllerBase {
    * @return \Drupal\Core\Ajax\AjaxResponse
    *   Response.
    */
-  public function trainingStepsAjax(Group $group): AjaxResponse {
+  public function training_steps_ajax(Group $group) {
     $selector = '#training_steps_' . $group->id();
-    $content = $this->buildLpSteps($group);
+    $content = $this->build_lp_steps($group);
     $content['#attributes']['data-ajax-loaded'] = TRUE;
     $response = new AjaxResponse();
     $response->addCommand(new ReplaceCommand($selector, $content));
@@ -851,8 +1024,9 @@ class LearningPathAchievementController extends ControllerBase {
    * Checks training progress access.
    */
   public function buildTrainingProgressAccess(AccountInterface $account) {
-    return AccessResult::allowedIf($account->id() > 0 && $this->userAccessManager->canAccessUserStatistics($account)
-    );
+    /** @var \Drupal\opigno_social\Services\UserAccessManager $user_access_manager */
+    $user_access_manager = \Drupal::service('opigno_social.user_access_manager');
+    return AccessResult::allowedIf($account->id() > 0 && $user_access_manager->canAccessUserStatistics($account));
   }
 
   /**
@@ -877,7 +1051,7 @@ class LearningPathAchievementController extends ControllerBase {
    */
   public function buildTrainingProgress($group = NULL, $account = NULL) {
     return array_map(function ($group) use ($account) {
-      return $this->buildTraining($group, $account);
+      return $this->build_training($group, $account);
     }, [$group]);
   }
 
@@ -890,7 +1064,7 @@ class LearningPathAchievementController extends ControllerBase {
    * @return array
    *   Training page array.
    */
-  protected function buildPage(int $page = 0): array {
+  protected function build_page($page = 0) {
     $per_page = 5;
 
     $user = $account = $this->currentUser();
@@ -933,7 +1107,7 @@ class LearningPathAchievementController extends ControllerBase {
     $groups = Group::loadMultiple($gids);
 
     return array_map(function ($group) use ($account) {
-      return $this->buildTraining($group, $account);
+      return $this->build_training($group, $account);
     }, $groups);
   }
 
@@ -949,11 +1123,8 @@ class LearningPathAchievementController extends ControllerBase {
    *   $attempt
    */
   protected function getTargetAttempt(array $attempts, OpignoModule $module) {
-    $latest = end($attempts);
-    if ($module->getKeepResultsOption() === 'newest'
-      || ($latest instanceof UserModuleStatusInterface && !$latest->isFinished())
-    ) {
-      $attempt = $latest;
+    if ($module->getKeepResultsOption() == 'newest') {
+      $attempt = end($attempts);
     }
     else {
       $attempt = opigno_learning_path_best_attempt($attempts);
@@ -971,10 +1142,10 @@ class LearningPathAchievementController extends ControllerBase {
    * @return \Drupal\Core\Ajax\AjaxResponse
    *   Response.
    */
-  public function pageAjax(int $page = 0): AjaxResponse {
+  public function page_ajax($page = 0) {
     $selector = '#achievements-wrapper';
 
-    $content = $this->buildPage($page);
+    $content = $this->build_page($page);
 
     $response = new AjaxResponse();
     if (!empty($content)) {
@@ -1000,7 +1171,7 @@ class LearningPathAchievementController extends ControllerBase {
       ],
       [
         '#theme' => 'opigno_learning_path_message',
-        '#markup' => $this->t('Consult your results and download the certificates for the trainings.'),
+        '#markup' => t('Consult your results and download the certificates for the trainings.'),
       ],
       '#attached' => [
         'library' => [
@@ -1010,7 +1181,7 @@ class LearningPathAchievementController extends ControllerBase {
       ],
     ];
 
-    $content[] = $this->buildPage($page);
+    $content[] = $this->build_page($page);
     return $content;
   }
 
@@ -1044,10 +1215,10 @@ class LearningPathAchievementController extends ControllerBase {
     $time_spent = $time_spent ? $this->dateFormatter->formatInterval($time_spent) : 0;
     $completed = $completed ? $this->dateFormatter->format($completed, 'custom', 'm/d/Y') : '';
     $completed = $completed ?: '';
-    [
+    list(
       $approved,
       $approved_percent,
-    ] = $this->getApprovedModuleByStep($step, $user, $latest_cert_date, $group);
+      ) = $this->getApprovedModuleByStep($step, $user, $latest_cert_date, $group);
     $badges = $this->getModulesStatusBadges($step, $group, $user->id());
 
     /** @var \Drupal\opigno_module\Entity\OpignoModule $module */
@@ -1064,7 +1235,7 @@ class LearningPathAchievementController extends ControllerBase {
         'value' => $approved,
         'percent' => $approved_percent,
       ],
-      '#activities' => $this->buildModulePanel($group, $module, NULL, $user),
+      '#activities' => $this->build_module_panel($group, NULL, $module, $user),
     ];
   }
 
@@ -1077,11 +1248,7 @@ class LearningPathAchievementController extends ControllerBase {
     $time_spent = $time_spent ? $this->dateFormatter->formatInterval($time_spent) : 0;
     $completed = $completed ? $this->dateFormatter->format($completed, 'custom', 'm/d/Y') : '';
     $badges = $this->getModulesStatusBadges($step, $group, $user->id());
-    [
-      $passed,
-      $passed_percent,
-      $score_percent,
-    ] = $this->getStatusPercentCourseByStep($step, $latest_cert_date, $group, $user);
+    list($passed, $passed_percent, $score_percent) = $this->getStatusPercentCourseByStep($step, $latest_cert_date, $group, $user);
     return [
       '#type' => 'container',
       '#attributes' => [],
@@ -1097,7 +1264,7 @@ class LearningPathAchievementController extends ControllerBase {
         '#badges' => $badges,
         '#time_spent' => $time_spent,
       ],
-      [$this->buildCourseSteps($group, Group::load($step['id']), $user)],
+      $this->build_course_steps($group, Group::load($step['id']), $user),
     ];
   }
 
@@ -1107,11 +1274,12 @@ class LearningPathAchievementController extends ControllerBase {
   private function trainingStepIltBuild($step, $group, $user, $latest_cert_date) {
 
     // If the user is not a member of the meeting.
-    $ilt = $this->entityTypeManager
+    /** @var \Drupal\opigno_ilt\Entity\ILT $ilt */
+    $ilt = \Drupal::entityTypeManager()
       ->getStorage('opigno_ilt')
       ->load($step['id']);
 
-    if (!($ilt instanceof ILT)) {
+    if (!($ilt instanceof  ILT)) {
       return [];
     }
     if (!($valid_unix = strtotime($ilt->getStartDate()))) {
@@ -1136,11 +1304,13 @@ class LearningPathAchievementController extends ControllerBase {
    * Prepare render array for Meeting step.
    */
   private function trainingStepMeetingBuild($step, $group, $user, $latest_cert_date) {
+
     // If the user is not a member of the meeting.
-    $meeting = $this->entityTypeManager
+    /** @var \Drupal\opigno_moxtra\Entity\Meeting $meeting */
+    $meeting = \Drupal::entityTypeManager()
       ->getStorage('opigno_moxtra_meeting')
       ->load($step['id']);
-    if (!($meeting instanceof Meeting)) {
+    if (!($meeting instanceof  Meeting)) {
       return [];
     }
     if (!($valid_unix = strtotime($meeting->getStartDate()))) {

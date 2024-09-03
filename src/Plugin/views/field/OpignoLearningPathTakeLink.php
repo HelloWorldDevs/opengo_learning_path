@@ -3,7 +3,7 @@
 namespace Drupal\opigno_learning_path\Plugin\views\field;
 
 use Drupal\Core\Link;
-use Drupal\opigno_learning_path\Entity\LPStatus;
+use Drupal\opigno_learning_path\Entity\LPResult;
 use Drupal\views\Plugin\views\field\FieldPluginBase;
 use Drupal\views\ResultRow;
 
@@ -31,10 +31,7 @@ class OpignoLearningPathTakeLink extends FieldPluginBase {
     // Get an entity object.
     $learnign_path = $values->_entity;
     $bundle = $learnign_path->getGroupType()->id();
-    $group_progress = LPStatus::learningPathUserProgress(
-      $learnign_path,
-      $account->id()
-    );
+    $group_progress = LPResult::learningPathUserProgress($learnign_path, $account->id());
     if ($group_progress > 0) {
       $link_text = $this->t('Continue');
     }
@@ -45,7 +42,7 @@ class OpignoLearningPathTakeLink extends FieldPluginBase {
     if ($bundle == 'learning_path') {
       return Link::createFromRoute(
         $link_text,
-        'opigno_learning_path.steps.type_start',
+        'opigno_learning_path.steps.start',
         ['group' => $learnign_path->id()],
         [
           'attributes' => [

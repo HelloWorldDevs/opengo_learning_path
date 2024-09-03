@@ -2,26 +2,17 @@
 
 namespace Drupal\opigno_learning_path;
 
-use Drupal\Core\Database\Connection;
-use Drupal\Core\Entity\EntityRepositoryInterface;
-use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\Core\StringTranslation\StringTranslationTrait;
-use Drupal\opigno_group_manager\OpignoGroupContext;
 use Drupal\opigno_module\Entity\OpignoModule;
 use Drupal\Core\Extension\ModuleHandler;
+use Drupal\user\Entity\User;
 use Drupal\opigno_group_manager\Entity\OpignoGroupManagedContent;
 use Drupal\group\Entity\GroupInterface;
-use Drupal\opigno_module\Entity\UserModuleStatusInterface;
 use Drupal\opigno_moxtra\MeetingInterface;
 use Drupal\Core\Datetime\DrupalDateTime;
 use Drupal\opigno_ilt\ILTInterface;
 
-/**
- * Defines the LP steps service.
- *
- * @package Drupal\opigno_learning_path
- */
 class LpSteps {
 
   use StringTranslationTrait;
@@ -41,52 +32,19 @@ class LpSteps {
   protected $database;
 
   /**
-   * The module handler service.
+   * The RequestStack.
    *
-   * @var \Drupal\Core\Extension\ModuleHandler
+   * @var \Symfony\Component\HttpFoundation\RequestStack
    */
   protected $moduleHandler;
 
   /**
-   * Entity repository service.
-   *
-   * @var \Drupal\Core\Entity\EntityRepositoryInterface
+   * Constructs a new Progress object.
    */
-  protected $entityRepository;
-
-  /**
-   * The entity type manager service.
-   *
-   * @var \Drupal\Core\Entity\EntityTypeManagerInterface
-   */
-  protected $entityTypeManager;
-
-  /**
-   * LpSteps constructor.
-   *
-   * @param \Drupal\Core\Session\AccountInterface $current_user
-   *   The current user account.
-   * @param \Drupal\Core\Database\Connection $database
-   *   The DB connection service.
-   * @param \Drupal\Core\Extension\ModuleHandler $module_handler
-   *   The module handler service.
-   * @param \Drupal\Core\Entity\EntityRepositoryInterface $entity_repository
-   *   The entity repository service.
-   * @param \Drupal\Core\Entity\EntityTypeManagerInterface $entity_type_manager
-   *   The entity type manager service.
-   */
-  public function __construct(
-    AccountInterface $current_user,
-    Connection $database,
-    ModuleHandler $module_handler,
-    EntityRepositoryInterface $entity_repository,
-    EntityTypeManagerInterface $entity_type_manager
-  ) {
+  public function __construct(AccountInterface $current_user, $database, ModuleHandler $module_handler) {
     $this->currentUser = $current_user;
     $this->database = $database;
     $this->moduleHandler = $module_handler;
-    $this->entityRepository = $entity_repository;
-    $this->entityTypeManager = $entity_type_manager;
   }
 
   /**
@@ -109,16 +67,13 @@ class LpSteps {
         return array_shift($results);
       }
 
-      $user = $this->entityTypeManager->getStorage('user')->load($uid);
-      $module = $this->entityRepository->getTranslationFromContext($module);
-
+      $user = User::load($uid);
       // Get actual score for Module.
       $actual_score = $module->getUserScore($user, $latest_cert_date, $group_id);
       // Get required score.
       $required_score = (int) $content->getSuccessScoreMin();
       // Get attempts.
-      $attempts = $module->getModuleAttempts($user, NULL, $latest_cert_date, FALSE, $group_id);
-      $last_attempt = !empty($attempts) ? end($attempts) : NULL;
+      $attempts = $module->getModuleAttempts($user, NULL, $latest_cert_date, TRUE, $group_id);
       $last_attempt_score = $this->getLastAttemptScore($attempts);
       // Get activities.
       $activities = $module->getModuleActivities(TRUE);
@@ -131,19 +86,9 @@ class LpSteps {
         'latest_cert_date' => $latest_cert_date,
         'actual_score' => $actual_score,
         'attempts' => $attempts,
-        'last_attempt' => $last_attempt,
       ];
 
-      $completed_on = $this->stepIsCompleted($options, $last_attempt_score);
-      // Check if the module attempt exists in current LP attempt.
-      $group_context_id = OpignoGroupContext::getCurrentGroupId() ?? $group_id;
-      $is_in_current_lp_attempt = FALSE;
-      foreach ($attempts as $attempt) {
-        if ($attempt instanceof UserModuleStatusInterface && $attempt->isInCurrentLpAttempt($uid, $group_context_id)) {
-          $is_in_current_lp_attempt = TRUE;
-          break;
-        }
-      }
+      $completed_on = $this->stepIsComplated($options, $last_attempt_score);
 
       $results[$key] = [
         // OpignoGroupManagedContent id.
@@ -151,7 +96,7 @@ class LpSteps {
         // Entity id.
         'id' => $id,
         'name' => $module->label(),
-        'description' => $module->get('description')->view(),
+        'description' => $module->description->view(),
         'typology' => 'Module',
         'best score' => $actual_score,
         'current attempt score' => $last_attempt_score,
@@ -162,8 +107,6 @@ class LpSteps {
         'current attempt time' => 0,
         'completed on' => $completed_on,
         'mandatory' => (int) $content->isMandatory(),
-        'is_in_current_lp_attempt' => $is_in_current_lp_attempt,
-        'is_last_attempt_not_finished' => $last_attempt instanceof UserModuleStatusInterface && !$last_attempt->isFinished(),
       ];
     }
 
@@ -179,8 +122,6 @@ class LpSteps {
    *   User ID.
    * @param \Drupal\group\Entity\GroupInterface $course
    *   Group entity of the course.
-   * @param int|null $latest_cert_date
-   *   The timestamp of latest certification date.
    *
    * @return array
    *   Data array about step in a group for a user.
@@ -189,7 +130,7 @@ class LpSteps {
    * @throws \Drupal\Component\Plugin\Exception\PluginException
    * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
    */
-  public function getCourseStep($group_id, $uid, GroupInterface $course, ?int $latest_cert_date = NULL) {
+  public function getCourseStep($group_id, $uid, GroupInterface $course, $latest_cert_date = NULL) {
     $id = $course->id();
     $key = "{$group_id}_{$uid}_{$id}_{$latest_cert_date}";
     $results = &drupal_static(__FUNCTION__);
@@ -208,7 +149,7 @@ class LpSteps {
         $step_count = count($course_steps);
         $best_score = round(array_sum(array_map(function ($step) {
             return $step['best score'];
-        }, $course_steps)) / $step_count);
+          }, $course_steps)) / $step_count);
         $score = $this->courseGetScore($course_steps);
       }
       else {
@@ -292,7 +233,7 @@ class LpSteps {
 
     return round(array_sum(array_map(function ($step) {
         return $step['current attempt score'];
-    }, $course_steps)) / $step_count);
+      }, $course_steps)) / $step_count);
   }
 
   /**
@@ -323,8 +264,9 @@ class LpSteps {
         'entity_id' => $meeting->id(),
       ]));
 
+      $entityTypeManager = \Drupal::entityTypeManager();
       /** @var \Drupal\opigno_moxtra\MeetingResultInterface[] $meeting_results */
-      $meeting_results = $this->entityTypeManager
+      $meeting_results = $entityTypeManager
         ->getStorage('opigno_moxtra_meeting_result')
         ->loadByProperties([
           'user_id' => $uid,
@@ -416,8 +358,9 @@ class LpSteps {
         'entity_id' => $ilt->id(),
       ]));
 
+      $entityTypeManager = \Drupal::entityTypeManager();
       /** @var \Drupal\opigno_ilt\ILTResultInterface[] $ilt_results */
-      $ilt_results = $this->entityTypeManager
+      $ilt_results = $entityTypeManager
         ->getStorage('opigno_ilt_result')
         ->loadByProperties([
           'user_id' => $uid,
@@ -508,7 +451,7 @@ class LpSteps {
    * @return numeric
    *   Time was spending for attempts.
    */
-  public function getTimeSpent(array $attempts) {
+  public function getTimeSpent($attempts) {
     return array_sum(array_map(function ($attempt) {
       /** @var \Drupal\opigno_module\Entity\UserModuleStatus $attempt */
       $started = (int) $attempt->get('started')->getString();
@@ -557,42 +500,32 @@ class LpSteps {
    *
    * @param array $options
    *   List of options.
-   * @param float|int|string|null $last_attempt_score
-   *   Last Score.
+   * @param numeric $last_attempt_score
+   *   Last Score
    *
    * @return numeric
    *   When completed.
    */
-  public function stepIsCompleted(array $options, &$last_attempt_score = NULL) {
-    // If the latest module attempt isn't finished, display it.
-    $last_attempt = $options['last_attempt'] ?? NULL;
-    if ($last_attempt instanceof UserModuleStatusInterface && !$last_attempt->isFinished()) {
-      return 0;
-    }
-
+  public function stepIsComplated(array $options, &$last_attempt_score = NULL) {
     $passed_attempts = $this->passedAttempts($options);
+    $moduleHandler = \Drupal::service('module_handler');
     $completed_on = 0;
 
-    if ($options['module']->getKeepResultsOption() === 'newest') {
+    if ($options['module']->getKeepResultsOption() == 'newest') {
       // Get finish date of the last attempt if passed.
       $last_passed_attempt = end($passed_attempts);
       $last_attempt = end($options['attempts']);
-      if (!empty($last_attempt) && !empty($last_passed_attempt)
-      && $last_passed_attempt->id() == $last_attempt->id()) {
+      if (!empty($last_attempt) && $last_passed_attempt == $last_attempt) {
         $completed_on = $last_attempt->get('finished')->getString();
       }
     }
     // Set correct finished time for 'automatic skills module'.
-    elseif ($this->moduleHandler->moduleExists('opigno_skills_system')
-      && $options['module']->getSkillsActive()
-      && !empty($options['last_attempt'])
-    ) {
+    elseif ($moduleHandler->moduleExists('opigno_skills_system') && $options['module']->getSkillsActive() && !empty($options['last_attempt'])) {
       if ($options['last_attempt']->isFinished()) {
         $completed_on = $options['last_attempt']->get('finished')->getString();
       }
 
-      // Add cheat for skills modules to jump to the next module if the user
-      // already has needed skills.
+      // Add cheat for skills modules to jump to the next module if the user already has needed skills.
       if ($options['last_attempt']->getScore() > $options['last_attempt_score']) {
         $last_attempt_score = $options['last_attempt']->getScore();
 

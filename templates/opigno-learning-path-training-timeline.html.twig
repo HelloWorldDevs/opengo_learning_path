@@ -1,0 +1,29 @@
+{#
+/**
+ * @file
+ * Default theme implementation to display the training steps.
+ *
+ * Available variables:
+ * - status: Step status.
+ * - label: Step name.
+ * - completed_on: Completed date.
+ */
+#}
+
+<div class="lp_timeline_wrapper px-3 px-md-5 pb-5">
+  <div class="lp_timeline lp_timeline_not_empty">
+    <span class="lp_timeline_begin"></span>
+    {% for step in steps %}
+      <div class="lp_timeline_step {{ step.status }}">
+        <div class="lp_timeline_step_label">
+          <div class="lp_timeline_step_label_title">
+            {{ step.label|length > 42 ? step.label|slice(0, 42) ~ '...' :  step.label }}
+          </div>
+          <div class="lp_timeline_step_label_completed_on">{{ step.completed_on }}</div>
+        </div>
+        <div class="lp_status {{ step.status }}"></div>
+      </div>
+    {% endfor %}
+    <span class="lp_timeline_end"></span>
+  </div>
+</div>

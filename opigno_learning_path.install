@@ -9,7 +9,6 @@ use Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException;
 use Drupal\Component\Plugin\Exception\PluginNotFoundException;
 use Drupal\Core\Config\FileStorage;
 use Drupal\Core\Entity\EntityStorageException;
-use Drupal\Core\Field\BaseFieldDefinition;
 use Drupal\field\Entity\FieldConfig;
 use Drupal\field\Entity\FieldStorageConfig;
 use Drupal\group\Entity\GroupInterface;
@@ -53,21 +52,6 @@ function opigno_learning_path_install() {
     catch (EntityStorageException $e) {
       watchdog_exception('opigno_learning_path_exception', $e);
     }
-  }
-
-  // Checking if the lp_status fields definition is not exist.
-  // In case of the fresh install, according to order of the modules
-  // installation, the opigno_module can be enabled before this one.
-  $definition_update_manager = \Drupal::entityDefinitionUpdateManager();
-  if (!($definition_update_manager->getFieldStorageDefinition('lp_status', 'user_module_status'))) {
-    // Add a reference to LP status entity.
-    $definition = BaseFieldDefinition::create('entity_reference')
-      ->setLabel(t('Learning path status'))
-      ->setDescription(t('The learning path status entity the current module attempt belongs to'))
-      ->setSetting('target_type', 'user_lp_status')
-      ->setSetting('target_bundles', ['user_lp_status' => 'user_lp_status']);
-
-    $definition_update_manager->installFieldStorageDefinition('lp_status', 'user_module_status', 'opigno_module', $definition);
   }
 }
 
@@ -361,7 +345,7 @@ function opigno_learning_path_update_9001() {
  */
 function opigno_learning_path_update_9002() {
   $config_path = \Drupal::service('extension.list.module')->getPath('opigno_learning_path') . '/config/optional';
-  /** @var Drupal\Core\Config\CachedStorage $config_storage */
+  /* @var Drupal\Core\Config\CachedStorage $config_storage */
   $storage = new FileStorage($config_path);
   $config_storage = \Drupal::service('config.storage');
   $data = $storage->read('core.entity_view_display.group.learning_path.default');
@@ -502,7 +486,7 @@ function opigno_learning_path_update_9004() {
     $config_storage->delete($config->name);
     $config_storage->write($config->name, $source->read($config->name));
   }
-  /** @var \Drupal\Core\Config\ConfigInstaller $installer */
+  /* @var \Drupal\Core\Config\ConfigInstaller $installer */
   $installer = \Drupal::service('config.installer');
   $installer->installOptionalConfig($source);
 
@@ -556,93 +540,4 @@ function opigno_learning_path_update_9009() {
     'core.entity_view_display.group.learning_path.default',
     'image.style.learning_path_thumbnail',
   ]);
-  _opigno_module_apply_update('module', 'opigno_learning_path', 'config/optional', [
-    'image.style.learning_path_thumbnail',
-  ]);
-}
-
-/**
- * Remove database records related to deleted groups.
- */
-function opigno_learning_path_update_9011() {
-  // Add a new "finalized" field to the LPStatus entity.
-  $definition = BaseFieldDefinition::create('boolean')
-    ->setLabel(t('Finalizing status'))
-    ->setDescription(t('The LP attempt finalizing status.'))
-    ->setDefaultValue(FALSE);
-
-  \Drupal::entityDefinitionUpdateManager()->installFieldStorageDefinition(
-    'finalized',
-    'user_lp_status',
-    'opigno_learning_path',
-    $definition
-  );
-
-  // Set the "finalized" field value.
-  $db = \Drupal::database();
-  $db->update('user_lp_status')
-    ->fields(['finalized' => 1])
-    ->condition('finished', 0, '>')
-    ->execute();
-
-  $db->update('user_lp_status')
-    ->fields(['finalized' => 0])
-    ->condition('finished', 0)
-    ->execute();
-
-  // Remove database records related to deleted groups.
-  $database = \Drupal::database();
-
-  // Get existing group IDs.
-  $gids = $database->select('groups', 'g')
-    ->fields('g', ['id'])
-    ->execute()
-    ->fetchCol();
-
-  if (!$gids) {
-    return;
-  }
-
-  $tables = [
-    'opigno_learning_path_achievements' => 'gid',
-    'opigno_learning_path_step_achievements' => 'gid',
-    'user_lp_status_expire' => 'gid',
-    'opigno_learning_path_group_user_status' => 'gid',
-  ];
-
-  foreach ($tables as $table => $field) {
-    $database->delete($table)
-      ->condition($field, $gids, 'NOT IN')
-      ->execute();
-  }
-
-  // Remove related entities.
-  $entity_type_manager = \Drupal::entityTypeManager();
-  $entity_types = [
-    'user_lp_status' => 'gid',
-    'learning_path_content' => 'learning_path_id',
-    'learning_path_link' => 'learning_path_id',
-    'opigno_group_content' => 'group_id',
-    'opigno_group_link' => 'group_id',
-  ];
-
-  foreach ($entity_types as $entity_type => $field) {
-    // Get IDs of entities related to the deleted groups.
-    $ids = $database->select($entity_type, 'table')
-      ->fields('table', ['id'])
-      ->condition("table.$field", $gids, 'NOT IN')
-      ->execute()
-      ->fetchCol();
-
-    if (!$ids) {
-      continue;
-    }
-
-    // Delete entities.
-    $storage = $entity_type_manager->getStorage($entity_type);
-    $entities = $storage->loadMultiple($ids);
-    if ($entities) {
-      $storage->delete($entities);
-    }
-  }
 }
